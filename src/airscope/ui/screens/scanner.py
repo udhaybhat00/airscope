@@ -615,7 +615,7 @@ class ScannerView(Screen):
             if ap.wps:
                 label = f"{WPS_LOCKED} WPS Setup Vuln" if ap.wps_locked else f"{WPS_OPEN} WPS Setup Vuln"
                 return Text(label, style=f"{dim}{fg}")
-            return Text("—", style=f"dim {fg}")
+            return Text("--", style=f"dim {fg}")
         if col_key == "identity":
             return self._identity_cell(ap, is_stale)
         return Text("")

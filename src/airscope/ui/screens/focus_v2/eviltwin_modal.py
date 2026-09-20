@@ -85,7 +85,7 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
         host = self._hosts[0] if self._hosts else None
         punter = next((m for m in self._punters if m is not host), host)
         with Vertical(id="dialog"):
-            yield Label("EvilTwin — capture a real handshake, twin the AP, live-MIC the PSK",
+            yield Label("EvilTwin - capture a real handshake, twin the AP, live-MIC the PSK",
                         id="title")
 
             with Horizontal(classes="row"):

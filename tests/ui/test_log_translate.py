@@ -12,7 +12,7 @@ _CASES: list[tuple[str, str]] = [
     ("Got EAPOL M3 from aa:bb:cc:dd:ee:ff", "Handshake step 3 captured"),
     ("Got EAPOL M4 from aa:bb:cc:dd:ee:ff", "Handshake step 4 captured"),
     ("Crackable pair confirmed for 94:83:c4:8c:3f:78",
-     "Complete handshake — ready to crack"),
+     "Complete handshake - ready to crack"),
     ("Handshake already saved for 94:83:c4:8c:3f:78",
      "Already have a capture for this network"),
     # PMKID
@@ -29,7 +29,7 @@ _CASES: list[tuple[str, str]] = [
     ("WPS PSK (via PushButton) found PSK=secret",
      "Password recovered via WPS button"),
     ("WPS locked on aa:bb:cc:dd:ee:ff",
-     "Router has locked WPS — too many attempts"),
+     "Router has locked WPS - too many attempts"),
     # deauth
     ("Sending deauth to client aa:bb:cc:dd:ee:01 on ch6",
      "Disconnecting a device from the network"),

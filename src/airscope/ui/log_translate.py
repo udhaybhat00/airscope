@@ -15,10 +15,10 @@ _RULES: list[tuple[str, str]] = [
     ("Got EAPOL M2", "Handshake step 2 captured"),
     ("Got EAPOL M3", "Handshake step 3 captured"),
     ("Got EAPOL M4", "Handshake step 4 captured"),
-    ("Crackable pair confirmed", "Complete handshake — ready to crack"),
+    ("Crackable pair confirmed", "Complete handshake - ready to crack"),
     ("Handshake already saved", "Already have a capture for this network"),
-    ("HANDSHAKE captured", "Handshake captured — ready to crack"),
-    ("✓ HANDSHAKE", "Handshake captured — ready to crack"),
+    ("HANDSHAKE captured", "Handshake captured - ready to crack"),
+    ("✓ HANDSHAKE", "Handshake captured - ready to crack"),
     # ── PMKID ──────────────────────────────────────────────────────
     ("PMKID found", "Key fingerprint captured silently"),
     ("PMKID captured", "Key fingerprint captured silently"),
@@ -33,7 +33,7 @@ _RULES: list[tuple[str, str]] = [
     ("WPS PSK (via PushButton)", "Password recovered via WPS button"),
     ("WPS PSK found", "Password recovered via WPS"),
     ("✓ WPS PSK", "Password recovered via WPS"),
-    ("WPS locked", "Router has locked WPS — too many attempts"),
+    ("WPS locked", "Router has locked WPS - too many attempts"),
     # ── SAE / WPA3 ────────────────────────────────────────────────
     ("SAE captured", "WPA3 login exchange captured"),
     ("✓ SAE", "WPA3 login exchange captured"),
@@ -58,7 +58,7 @@ _RULES: list[tuple[str, str]] = [
     # ── PMF ────────────────────────────────────────────────────────
     ("PMF Required", "Network requires management frame protection"),
     ("Deauth attacks have been disabled",
-     "Disconnect attacks blocked — network uses management protection"),
+     "Disconnect attacks blocked - network uses management protection"),
     # ── WEP attacks ────────────────────────────────────────────────
     ("ChopChop", "Packet forgery attack"),
     ("ARP Replay", "Replaying ARP packets to generate data"),

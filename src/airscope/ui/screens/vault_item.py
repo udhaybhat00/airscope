@@ -201,7 +201,7 @@ class CrackModal(ModalScreen[Optional[str]]):
     def _start(self, event: Event) -> None:
         path = self.query_one("#crack-wordlist", Input).value.strip()
         if not path or not Path(path).is_file():
-            self.query_one("#crack-error", Label).update("Wordlist file not found — check the path and try again.")
+            self.query_one("#crack-error", Label).update("Wordlist file not found - check the path and try again.")
             return
         self.dismiss(path)
 
@@ -439,7 +439,7 @@ class _CapturePanel(VerticalGroup):
             text = f"Cracking ({self._crack_tool}): {prog.tested:,} tried"
         if prog.speed:
             text += f" · {prog.speed}"
-        text += " — press Crack to stop"
+        text += " - press Crack to stop"
         self._crack_note(text)
 
     async def _run_crack(self, wordlist: str) -> None:
@@ -482,7 +482,7 @@ class _CapturePanel(VerticalGroup):
                             title="Password cracked")
                 self.post_message(VaultItemView.CapturesChanged())
             else:
-                self._crack_note("Finished — no match found in wordlist.")
+                self._crack_note("Finished - no match found in wordlist.")
         except asyncio.CancelledError:
             self._crack_note("Stopped.")
             raise
@@ -514,7 +514,7 @@ class VaultItemView(Vertical):
     # (bssid, ssid, captures); setting it rebuilds the panels for the new AP.
     _state: reactive[tuple] = reactive(("", None, ()), recompose=True)
 
-    EMPTY_VAULT_MSG = "No captured handshakes yet — go to Scanner, pick a network, and capture."
+    EMPTY_VAULT_MSG = "No captured handshakes yet - go to Scanner, pick a network, and capture."
     EMPTY_SELECT_MSG = "Select a network to view its captured handshakes and passwords"
 
     def load(self, bssid: str, ssid: Optional[str], captures: List[PersistedCapture],

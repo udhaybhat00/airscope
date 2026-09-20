@@ -1,6 +1,10 @@
 """Web backend Phase 1: bus, demo context, and the read-only API surface."""
 import pytest
-from fastapi.testclient import TestClient
+
+try:
+    from fastapi.testclient import TestClient
+except (ImportError, RuntimeError):
+    pytest.skip("web tests require the [web] extra (httpx2)", allow_module_level=True)
 
 from airscope.web import create_app
 from airscope.web.bus import Bus

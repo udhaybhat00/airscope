@@ -308,7 +308,7 @@ class SplashView(Screen):
                     single_list.index = 0
                 single_list.focus()
         else:
-            status.update("[dim]No adapter detected — plug in a supported USB Wi-Fi adapter. "
+            status.update("[dim]No adapter detected - plug in a supported USB Wi-Fi adapter. "
                           "See docs/SUPPORTED-HARDWARE.md for compatible devices.[/dim]")
             start_btn.disabled = True
             uninstall_btn.disabled = True
