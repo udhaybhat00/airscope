@@ -73,7 +73,9 @@ a = Analysis(
     runtime_hooks=[],
     # pyshark shells out to a separate Wireshark/tshark install (can't be bundled) and is
     # dev/RE-only; the rest are dev tooling that has no place in a distributed build.
-    excludes=["pyshark", "pytest", "ruff", "textual_dev", "PIL"],
+    # websockets.speedups is a thin-only C helper with a pure-Python fallback
+    # (try/except at import): excluding it keeps macOS universal2 builds green.
+    excludes=["pyshark", "pytest", "ruff", "textual_dev", "PIL", "websockets.speedups"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)

@@ -152,6 +152,37 @@ jobs:
       - name: Sync uv env
         run: uv sync --group dev --extra web --python /Library/Frameworks/Python.framework/Versions/3.12/bin/python3
 
+      # uvicorn's speed deps (uvloop/httptools/watchfiles) ship thin-only wheels and the
+      # frozen server doesn't need them (asyncio + h11 fallback, no --reload in prod).
+      - name: Drop thin-only server speedups
+        run: uv pip uninstall -y uvloop httptools watchfiles
+
+      # pydantic-core (fastapi's engine) is also thin-only: lipo x86_64 + arm64
+      # into one fat .so and swap it into the venv (same pattern as libusb).
+      - name: Fatten pydantic_core (thin wheels break universal2)
+        shell: bash
+        run: |
+          set -euo pipefail
+          work=$(mktemp -d)
+          ver=$(uv run --no-sync python -c "import pydantic_core; print(pydantic_core.__version__)")
+          echo "fattening pydantic_core $ver"
+          # (pydantic-core tags per-Python wheels on macosx_10_12_x86_64 /
+          # macosx_11_0_arm64; the 3.12 build needs the cp312 pair.)
+          for plat in macosx_10_12_x86_64 macosx_11_0_arm64; do
+            url=$(curl -fsSL "https://pypi.org/pypi/pydantic-core/$ver/json" | python3 -c \
+              "import json,sys; print(next(u['url'] for u in json.load(sys.stdin)['urls'] if '$plat' in u['filename'] and 'cp312' in u['filename'] and u['filename'].endswith('.whl')))")
+            curl -fsSL -o "$work/$plat.whl" "$url"
+            unzip -qo "$work/$plat.whl" -d "$work/$plat"
+          done
+          x64lib=$(find "$work/macosx_10_12_x86_64" -name '_pydantic_core*' -type f)
+          armlib=$(find "$work/macosx_11_0_arm64" -name '_pydantic_core*' -type f)
+          target=$(find .venv -name '_pydantic_core*' -path '*pydantic_core*' -type f)
+          lipo -create "$x64lib" "$armlib" -output "$work/pydantic-fat.so"
+          codesign --sign - --force "$work/pydantic-fat.so"  # re-ad-hoc-sign: arm64 requires a valid sig
+          cp "$work/pydantic-fat.so" "$target"
+          lipo_output=$(lipo -archs "$target")
+          grep -qw x86_64 <<<"$lipo_output" && grep -qw arm64 <<<"$lipo_output"
+
       - name: Set up Node
         uses: actions/setup-node@v7
         with:
