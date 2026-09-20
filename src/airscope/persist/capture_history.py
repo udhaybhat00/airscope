@@ -151,6 +151,9 @@ def _parse_file(path: Path, bssid: str) -> List[PersistedCapture]:
     if kind == "cracked" and ext == "txt":
         return [PersistedCapture(type=CaptureType.CRACKED, timestamp=epoch, path=str(path),
                                  bssid=bssid, value=_read_wps_psk(path), ssid=ssid)]
+    if kind == "eviltwin_psk" and ext == "txt":
+        return [PersistedCapture(type=CaptureType.EVILTWIN_PSK, timestamp=epoch, path=str(path),
+                                 bssid=bssid, value=_read_wps_psk(path), ssid=ssid)]
     if kind == "handshake" and ext in ("hc22000", "pcap"):
         count = _count_hashlines(path, "WPA*02*") if ext == "hc22000" else 0
         return [PersistedCapture(type=CaptureType.HS, timestamp=epoch, path=str(path),
@@ -200,5 +203,5 @@ def summarize(index: Dict[str, List[PersistedCapture]]) -> tuple[int, int, int, 
         pmkid += CaptureType.PMKID in types
         wep += CaptureType.WEP in types
         wps += bool(types & {CaptureType.WPS_PIN, CaptureType.WPS_PBC})
-        cracked += CaptureType.CRACKED in types
+        cracked += bool(types & {CaptureType.CRACKED, CaptureType.EVILTWIN_PSK})
     return hs, pmkid, wep, wps, cracked

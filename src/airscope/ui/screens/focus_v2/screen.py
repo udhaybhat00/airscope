@@ -196,7 +196,6 @@ class FocusViewV2(Screen):
                border-title-color: %(border)s; border-title-style: bold; padding: 0 1; }
     /* Rows scroll inside a fixed-height region; the broadcast button stays pinned. */
     #client-rows { width: 100%%; height: 1fr; }
-
     .bcast-btn { width: 100%%; height: 1; min-width: 0; border: none; margin: 0 0 1 0;
                  background: $error; color: $text; content-align: center middle; }
     .client-row { height: 1; width: 100%%; }
@@ -209,7 +208,8 @@ class FocusViewV2(Screen):
     .cl-pwr { width: 5; text-align: right; }
     .cl-pkts { width: 6; text-align: right; }
     .cl-deauth { width: 3; min-width: 3; height: 1; border: none; margin: 0 0 0 1;
-                 background: red; color: white; content-align: center middle; }
+                 background: $error; color: $text; content-align: center middle; }
+    #help-strip { width: 100%%; height: 1; content-align: center middle; }
     """ % {"ew": _ENDPOINT_W, "top": _TOPBAR_H, "border": _BORDER}
 
     def __init__(self, **kwargs) -> None:
@@ -1085,6 +1085,11 @@ class FocusViewV2(Screen):
         if not ap or not array or not array.members:
             self._log("[red]✗ No target / interface. Cannot start EvilTwin.[/red]")
             return
+        if not any(m.supports_ap_mode for m in array.members):
+            self._log("[bold red]✗ EvilTwin needs an adapter with software-AP mode; "
+                      "[dim](none of your cards can host the fake AP, so the twin would "
+                      "answer no client)[/dim][/bold red]")
+            return
         self.app.push_screen(EvilTwinInputModal(ap, array.members), self._on_eviltwin_input)
 
     def _on_eviltwin_input(self, evil_input: Optional[EvilTwinInput]) -> None:
@@ -1096,23 +1101,36 @@ class FocusViewV2(Screen):
         if not ap or not array:
             return
         try:
-            started = self._controls.start(EvilTwinCampaign, array, ap, evil_input=evil_input)
+            started = self._controls.start(
+                EvilTwinCampaign, array, ap, evil_input=evil_input,
+                log=self._log, recovered=self._on_eviltwin_recovered)
         except Exception as exc:
             logger.exception("EvilTwin start failed")
             self._log(f"[bold red]✗ EvilTwin failed to start:[/bold red] {escape(str(exc))}")
             return
         if started is None:
             return
+        spoofed = "spoofing" if evil_input.twin_bssid == ap.bssid else "new BSSID"
         self._log(f"[bold cyan]EvilTwin[/bold cyan] of [bold cyan]"
-                  f"{escape(ap.ssid or ap.bssid)}[/bold cyan] active on ch {evil_input.twin_channel}"
-                  f" [dim]({evil_input.twin_bssid})[/dim]")
-        self._log(treelog.branch(f"[italic]punting clients[/italic] [dim]on[/dim] ch {ap.channel}"))
-        self._log(treelog.leaf("[dim]waiting for clients to auth…[/dim]"))
+                  f"{escape(ap.ssid or ap.bssid)}[/bold cyan] on ch {ap.channel}"
+                  f" [dim]({spoofed}: {evil_input.twin_bssid})[/dim]")
+        self._log(treelog.branch("[italic]deauthing clients[/italic] [dim]every 0.5 s[/dim]"))
         self.refresh_buttons()
 
+    def _on_eviltwin_recovered(self, password: str) -> None:
+        """A live MIC match on the twin's M2: the campaign saved the PSK; toast + stand down."""
+        self.notify(f"Password found: {password}", title="EvilTwin", timeout=8)
+        self._controls.request_stop()
+
     def _finish_eviltwin(self, camp) -> None:
-        """Reap a finished EvilTwin (user-stopped, or captured and released the radio itself)."""
-        if camp.captured:
+        """Reap a finished EvilTwin: a recovered PSK, a captured handshake, or a plain stop."""
+        if camp.password:
+            ap = self._target_ap
+            name = escape(ap.ssid or ap.bssid)
+            self._log(treelog.branch(
+                f"[black bold on green] Password for {name}: "
+                f"\"{escape(camp.password)}\" (EvilTwin) [/black bold on green]"))
+        elif camp.captured:
             self._log("[bold green]✓ EvilTwin captured a crackable handshake[/bold green]")
         else:
             self._log("[bold red]EvilTwin stopped[/bold red]")

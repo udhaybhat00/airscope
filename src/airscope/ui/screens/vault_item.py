@@ -30,12 +30,12 @@ from airscope.persist.common import bssid_to_dashed
 
 # (title, kinds) per panel, in display order. HS and PMKID share one panel.
 _PANELS: list[tuple[str, tuple[CaptureType, ...]]] = [
-    ("HANDSHAKE / PMKID", (CaptureType.HS, CaptureType.PMKID)),
-    ("WEP KEY", (CaptureType.WEP,)),
+    ("Captured Handshakes & PMKIDs", (CaptureType.HS, CaptureType.PMKID)),
+    ("WEP Key", (CaptureType.WEP,)),
     ("WPS PIN", (CaptureType.WPS_PIN,)),
-    ("WPS PBC", (CaptureType.WPS_PBC,)),
-    ("CRACKED PSK", (CaptureType.CRACKED,)),
-    ("SAE", (CaptureType.SAE,)),
+    ("WPS Push-Button", (CaptureType.WPS_PBC,)),
+    ("Recovered Password", (CaptureType.CRACKED,)),
+    ("SAE (WPA3)", (CaptureType.SAE,)),
 ]
 
 # Per credential kind: the (row label, field key) rows to show, each with its own Copy.
@@ -182,7 +182,7 @@ class CrackModal(ModalScreen[Optional[str]]):
 
     def compose(self) -> ComposeResult:
         with Vertical(id="crack-dialog"):
-            yield Label("[bold]Crack capture[/]")
+            yield Label("[bold]🔍 Crack Password[/]")
             yield Label(Text.from_markup(f"[dim]{escape(self._filename)}[/dim]"))
             yield Label(Text.from_markup(self._tool_line), id="crack-tool")
             yield Label("Wordlist:", id="crack-wordlist-label")
@@ -201,7 +201,7 @@ class CrackModal(ModalScreen[Optional[str]]):
     def _start(self, event: Event) -> None:
         path = self.query_one("#crack-wordlist", Input).value.strip()
         if not path or not Path(path).is_file():
-            self.query_one("#crack-error", Label).update("Wordlist not found - enter a valid file path.")
+            self.query_one("#crack-error", Label).update("Wordlist file not found — check the path and try again.")
             return
         self.dismiss(path)
 
@@ -439,7 +439,7 @@ class _CapturePanel(VerticalGroup):
             text = f"Cracking ({self._crack_tool}): {prog.tested:,} tried"
         if prog.speed:
             text += f" · {prog.speed}"
-        text += " - press Crack to stop"
+        text += " — press Crack to stop"
         self._crack_note(text)
 
     async def _run_crack(self, wordlist: str) -> None:
@@ -477,12 +477,12 @@ class _CapturePanel(VerticalGroup):
                     pass
             if psk:
                 self.app.vault.save_cracked_psk(newest.bssid, newest.ssid, psk, tool)
-                self._crack_note(f"Cracked: {psk}")
+                self._crack_note(f"✓ Password recovered: {psk}")
                 self.notify(f"Cracked PSK for {newest.ssid or newest.bssid}: {psk}",
                             title="Password cracked")
                 self.post_message(VaultItemView.CapturesChanged())
             else:
-                self._crack_note("Finished - no match in wordlist.")
+                self._crack_note("Finished — no match found in wordlist.")
         except asyncio.CancelledError:
             self._crack_note("Stopped.")
             raise
@@ -514,8 +514,8 @@ class VaultItemView(Vertical):
     # (bssid, ssid, captures); setting it rebuilds the panels for the new AP.
     _state: reactive[tuple] = reactive(("", None, ()), recompose=True)
 
-    EMPTY_VAULT_MSG = "○ No captures yet - run scanner → focus → capture"
-    EMPTY_SELECT_MSG = "Select an AP to view its captures"
+    EMPTY_VAULT_MSG = "No captured handshakes yet — go to Scanner, pick a network, and capture."
+    EMPTY_SELECT_MSG = "Select a network to view its captured handshakes and passwords"
 
     def load(self, bssid: str, ssid: Optional[str], captures: List[PersistedCapture],
              *, empty_vault: bool = False) -> None:

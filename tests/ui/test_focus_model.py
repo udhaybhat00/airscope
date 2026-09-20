@@ -541,14 +541,14 @@ async def test_buttons_wpa3_transition_shows_pmkid_and_eviltwin(buttons_screen):
 
 
 @pytest.mark.asyncio(loop_scope="module")
-async def test_buttons_wpa3_only_sae_shows_eviltwin(buttons_screen):
-    """SAE-only: PMKID isn't crackable, no transition/WPS → those hide. EvilTwin still shows:
-    it applies to any RSN incl. pure WPA3 (it herds SAE clients to a PSK twin)."""
+async def test_buttons_wpa3_only_sae_hides_eviltwin(buttons_screen):
+    """SAE-only: PMKID isn't crackable, no transition/WPS → those hide. EvilTwin hides too:
+    a pure WPA3 client has no PSK handshake for the online MIC check to recover."""
     b = _buttons(buttons_screen,
                  _rsn_ap(encryption="WPA3", wpa3=True, transition_mode=False, akms=("SAE",)))
     assert all(not b[bid].display for bid in
-               ("btn-gen-ivs", "btn-chop", "btn-pmkid", "btn-deauth", "btn-wps-pin"))
-    assert b["btn-eviltwin"].display is True
+               ("btn-gen-ivs", "btn-chop", "btn-pmkid", "btn-deauth", "btn-wps-pin",
+                "btn-eviltwin"))
 
 
 @pytest.mark.asyncio(loop_scope="module")

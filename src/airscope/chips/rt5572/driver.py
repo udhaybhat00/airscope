@@ -52,6 +52,7 @@ class RT5572Driver(Driver):
 
     SUPPORTED_CHANNELS = list(range(1, 15)) + list(CHANNELS_5G_NON_DFS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     @classmethod
     def from_usb_device(cls, dev: usb.core.Device, id_entry: DeviceID) -> "RT5572Driver":

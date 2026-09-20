@@ -37,3 +37,21 @@ export function encClass(encryption: string): string {
   if (upper === 'WPA') return 'outofscope';
   return 'muted';
 }
+
+const ENC_SUFFIX: Record<string, string> = {
+  WPA2: ' · Password protected',
+  WPA: ' · Password protected',
+  WEP: ' · Weak encryption',
+  OPEN: ' · No password',
+  WPA3: ' · Modern security',
+  OWE: ' · Open (enhanced)',
+};
+
+export function encSuffix(encryption: string): string {
+  const upper = (encryption || '').toUpperCase();
+  if (upper.includes('WPA3') && upper.includes('WPA2')) return ' · Mixed mode';
+  for (const [key, suffix] of Object.entries(ENC_SUFFIX)) {
+    if (upper.includes(key)) return suffix;
+  }
+  return '';
+}

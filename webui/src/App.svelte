@@ -15,6 +15,7 @@
   let now = $state(Date.now());
   let route: string = $state(location.hash || '#/');
   let batchError: string | null = $state(null);
+  let showOnboarding = $state(!localStorage.getItem('airscope-dismissed-onboarding'));
 
   function syncRoute() {
     route = location.hash || '#/';
@@ -80,16 +81,24 @@
 <header class="topbar">
   <span class="brand"><a href="#/">airscope</a> <small>v{$health?.version ?? '…'}</small></span>
   <nav>
-    <a href="#/" class:active={route === '#/'}>scanner</a>
-    <a href="#/devices" class:active={showDevices}>devices</a>
-    <a href="#/vault" class:active={showVault}>vault</a>
-    <a href="#/reports" class:active={showReports}>reports</a>
+    <a href="#/" class:active={route === '#/'}>📡 Scanner</a>
+    <a href="#/vault" class:active={showVault}>📋 Captured Results</a>
+    <a href="#/reports" class:active={showReports}>📤 Export Results</a>
+    <a href="#/devices" class:active={showDevices}>⚙ Devices</a>
   </nav>
   <span class="context">{$health?.engine ?? '…'}</span>
   <span class="spacer"></span>
   <button class="kbd-hint" onclick={() => paletteOpen.set(true)} title="Command palette">Ctrl+K</button>
-  <span class="dot {$status}">●</span>
-  <span class="context">{$status}</span>
+  {#if isDemo}
+    <span class="dot warn" title="Demo mode">●</span>
+    <span class="context">Demo mode</span>
+  {:else if $status === 'live'}
+    <span class="dot ok" title="Adapter ready">●</span>
+    <span class="context">Adapter ready</span>
+  {:else}
+    <span class="dot" title="No adapter">○</span>
+    <span class="context">No adapter</span>
+  {/if}
 </header>
 
 <main>
@@ -127,9 +136,32 @@
 
 <CommandPalette />
 
+{#if showOnboarding}
+  <div class="onboarding-overlay" role="dialog" aria-label="Welcome to airscope">
+    <div class="onboarding-card">
+      <h2>Welcome to airscope</h2>
+      <p>Your Wi-Fi auditing toolkit. Here's how to get started:</p>
+      <ol>
+        <li><strong>📡 Scanner</strong> — Detected networks appear here automatically. Click any row to inspect it.</li>
+        <li><strong>🎯 Target</strong> — Choose an attack (Deauth, PMKID, Evil Twin) and capture a handshake.</li>
+        <li><strong>📋 Captured Results</strong> — View handshakes and crack passwords with a wordlist.</li>
+        <li><strong>⚡ Auto Attack</strong> — Select multiple networks for batch processing.</li>
+      </ol>
+      <p class="hint">Press <code>Ctrl+K</code> anywhere to open the command palette.</p>
+      <button class="attack-btn" onclick={() => { showOnboarding = false; localStorage.setItem('airscope-dismissed-onboarding', '1'); }}>
+        Get started
+      </button>
+    </div>
+  </div>
+{/if}
+
 <footer class="statusbar">
   <span class:ok={$status === 'live'} class:warn={$status !== 'live'}>
-    {$status === 'live' ? `● ${rows.length} APs · ${nClients} clients` : `○ ${$status}…`}
+    {#if $status === 'live'}
+      ● Scanning · {rows.length} networks found · {nClients} devices · sorted by signal strength
+    {:else}
+      ○ {$status}…
+    {/if}
   </span>
   <span class="spacer"></span>
   <span>{tickAt ? `tick ${new Date(tickAt * 1000).toLocaleTimeString()}` : 'no ticks yet'}</span>

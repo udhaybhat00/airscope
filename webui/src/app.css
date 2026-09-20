@@ -99,8 +99,6 @@ h2 small, h3 small { color: var(--muted); font-weight: 400; }
   margin: 0.8rem 0;
 }
 
-.btnrow { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; }
-
 button, .btn {
   font: inherit;
   cursor: pointer;
@@ -207,6 +205,97 @@ td.stale { color: var(--muted); }
   padding: 0.15rem 0.5rem;
 }
 .kbd-hint:hover { border-color: var(--primary); color: var(--foreground); }
+
+/* Breadcrumb navigation */
+.breadcrumb { margin-bottom: 0.8rem; font-size: 0.85rem; }
+.breadcrumb a { color: var(--primary); text-decoration: none; }
+.breadcrumb a:hover { text-decoration: underline; }
+.breadcrumb .sep { color: var(--muted); margin: 0 0.4rem; }
+
+/* Attack buttons with description */
+.btnrow { display: flex; gap: 0.5rem; flex-wrap: wrap; margin: 0.5rem 0; flex-direction: column; }
+.btnrow button.attack-btn { min-height: 2.8rem; text-align: left; display: flex; flex-direction: column; gap: 0.15rem; }
+.attack-label { font-weight: 700; }
+.attack-desc { font-size: 0.75rem; opacity: 0.7; font-weight: 400; }
+
+/* EvilTwin 3-step progress */
+.eviltwin-progress {
+  background: var(--surface);
+  border: 1px solid var(--track);
+  border-radius: 8px;
+  padding: 0.8rem 1rem;
+  margin: 0.5rem 0;
+}
+.eviltwin-progress .step {
+  padding: 0.3rem 0;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+.eviltwin-progress .step.done {
+  color: var(--primary);
+}
+.eviltwin-progress .step.done::before {
+  content: "✓ ";
+}
+
+/* Batch progress bar */
+.batch-progress {
+  position: relative;
+  height: 1.5rem;
+  background: var(--surface);
+  border: 1px solid var(--track);
+  border-radius: 8px;
+  overflow: hidden;
+  margin: 0.5rem 0;
+}
+.batch-progress .progress-bar {
+  position: absolute;
+  inset: 0;
+  background: color-mix(in srgb, var(--primary) 20%, transparent);
+  border-radius: 8px;
+  transition: width 0.3s ease;
+}
+.batch-progress .progress-text {
+  position: relative;
+  z-index: 1;
+  padding: 0.2rem 0.6rem;
+  font-size: 0.8rem;
+  color: var(--foreground);
+}
+
+/* Dot status */
+.dot.ok { color: var(--primary); }
+.dot.warn { color: var(--accent); }
+
+/* Onboarding overlay */
+.onboarding-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.7);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 100;
+}
+.onboarding-card {
+  background: var(--surface);
+  border: 1px solid var(--primary);
+  border-radius: 12px;
+  padding: 2rem;
+  max-width: 500px;
+  width: 90vw;
+}
+.onboarding-card h2 { margin-top: 0; color: var(--primary); }
+.onboarding-card ol { padding-left: 1.2rem; line-height: 1.8; }
+.onboarding-card li { margin-bottom: 0.4rem; }
+.onboarding-card .hint { color: var(--muted); font-size: 0.85rem; }
+.onboarding-card code {
+  font-family: 'JetBrains Mono', ui-monospace, monospace;
+  background: var(--background);
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+}
+.onboarding-card .attack-btn { margin-top: 1rem; }
 
 .shade {
   position: fixed;

@@ -318,6 +318,27 @@ def _pairs_ignoring_akm(hs: Handshake) -> List[CrackablePair]:
 
 # ----- hc22000 emission ------------------------------------------------------
 
+def mic_matches(candidate: str, ssid: str, hs: Handshake,
+                pair: Optional[CrackablePair] = None) -> bool:
+    """Online 4-way MIC oracle: would ``candidate`` produce the keystone's MIC over
+    its EAPOL bytes? ``pair`` defaults to the best crackable pair in ``hs``. Routes
+    through ``crack.wpa_psk`` (PMK+PTK+KCK then HMAC over the MIC-zeroed payload), so
+    the EvilTwin live check and the offline ``-m 22000`` crack share one derivation."""
+    from airscope.crack.wpa_psk import mic_for
+    if pair is None:
+        pairs = crackable_pairs(hs)
+        pair = pairs[0] if pairs else None
+    if pair is None:
+        return False
+    payload = bytearray(pair.mic_frame.eapol_payload)
+    payload[_MIC_OFFSET: _MIC_OFFSET + _MIC_LEN] = _ZERO_MIC
+    aa = bytes.fromhex(hs.bssid.replace(":", ""))
+    spa = bytes.fromhex(hs.client_mac.replace(":", ""))
+    expected = mic_for(candidate, ssid, aa, spa, pair.anonce_frame.nonce,
+                       pair.mic_frame.nonce, bytes(payload))
+    return expected == pair.mic_frame.mic
+
+
 def mac_compact(mac: str) -> str:
     """``aa:bb:cc:dd:ee:ff`` -> ``aabbccddeeff`` (hashcat MAC encoding)."""
     return mac.replace(":", "").replace("-", "").lower()

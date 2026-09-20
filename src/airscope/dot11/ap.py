@@ -11,7 +11,7 @@ from airscope.dot11.ie import (
     GENERIC_RSN_IE, ds_param_ie, ext_rates_ie, force_psk_akm,
     iter_information_elements, rates_ie,
 )
-from airscope.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
+from airscope.dot11.eapol import data_header, eapol_key, set_mic, LLC_SNAP_EAPOL
 from airscope.dot11.mac import mac_header
 
 _CAP_ESS_PRIVACY = 0x0011
@@ -22,6 +22,7 @@ _ELEMID_HT_OP = 0x3D           # 61 HT Operation (primary channel + secondary-ch
 _ELEMID_VHT_OP = 0xC0          # 192 VHT Operation (channel width + center-frequency segments)
 _ELEMID_RSNXE = 0xF4            # RSN Extended Caps: SAE hash-to-element, MFP-required advert
 _M1_KEY_INFO = 0x008A          # Pairwise + Key ACK + key descriptor version 2 (HMAC-SHA1, PSK)
+_M3_KEY_INFO = 0x13CA          # Pairwise + Secure + Install + Key ACK + MIC + version 1 (real-world M3)
 _CCMP_KEY_LEN = 16
 
 
@@ -44,6 +45,19 @@ def assoc_resp(bssid: bytes, client: bytes, aid: int = 1) -> bytes:
 def eapol_m1(bssid: bytes, client: bytes, anonce: bytes, replay: int = 1) -> bytes:
     """4-way message 1 (AP->client): our ANonce, no MIC."""
     payload = eapol_key(key_info=_M1_KEY_INFO, key_len=_CCMP_KEY_LEN, replay=replay, nonce=anonce)
+    return data_header(to_ds=False, bssid=bssid, client=client) + LLC_SNAP_EAPOL + payload
+
+
+def eapol_m3_payload(anonce: bytes, replay: int = 1, key_data: bytes = b"") -> bytes:
+    """The M3 802.1X payload with a zeroed MIC: the exact bytes the AP-side MIC covers."""
+    return eapol_key(key_info=_M3_KEY_INFO, key_len=_CCMP_KEY_LEN, replay=replay,
+                     nonce=anonce, key_data=key_data)
+
+
+def eapol_m3(bssid: bytes, client: bytes, anonce: bytes, mic: bytes, replay: int = 1) -> bytes:
+    """4-way message 3 (AP->client): our ANonce repeated, the AP-side MIC the caller
+    computes from the recovered PTK over ``eapol_m3_payload``."""
+    payload = set_mic(eapol_m3_payload(anonce, replay), mic)
     return data_header(to_ds=False, bssid=bssid, client=client) + LLC_SNAP_EAPOL + payload
 
 

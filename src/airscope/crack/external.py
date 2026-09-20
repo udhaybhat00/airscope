@@ -8,12 +8,13 @@ stay UI-free and unit-testable; :func:`run_crack` drives the process.
 from __future__ import annotations
 
 import asyncio
+import gzip
 import re
 import shutil
 import sys
 from dataclasses import dataclass, field
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator, Iterable
 from typing import Optional
 
 HASHCAT_MODE = 22000
@@ -31,6 +32,37 @@ INSTALL_HINTS = {
     "win32": "choco install hashcat; see aircrack-ng.org for the Windows build",
     "linux": "sudo apt install hashcat aircrack-ng",
 }
+
+
+def find_wordlist() -> Optional[Path]:
+    """The first rockyou-style wordlist on disk (``WORDLIST_HINTS``), or None."""
+    for hint in WORDLIST_HINTS:
+        p = Path(hint)
+        if p.is_file():
+            return p
+    return None
+
+
+def iter_candidates(wordlist: Optional[Path], seeds: Iterable[str] = ()) -> Iterator[str]:
+    """Deduping stream of candidate passphrases: ``seeds`` first, then every line of
+    ``wordlist`` (skipping blanks). An unreadable/missing list yields just the seeds."""
+    seen: set[str] = set()
+    for seed in seeds:
+        if seed and seed not in seen:
+            seen.add(seed)
+            yield seed
+    if wordlist is None:
+        return
+    try:
+        opener = gzip.open if str(wordlist).endswith(".gz") else open
+        with opener(wordlist, mode="rt", encoding="utf-8", errors="replace") as fh:
+            for line in fh:
+                cand = line.strip()
+                if cand and cand not in seen:
+                    seen.add(cand)
+                    yield cand
+    except OSError:
+        return
 
 
 def install_hint() -> str:

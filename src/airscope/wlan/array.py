@@ -13,6 +13,7 @@ from typing import AsyncIterator, Callable, Dict, List, Optional, Set
 
 from airscope.chips.driver import FakeMacSupport
 from airscope.dot11.packet import BeaconPacket, Packet
+from airscope.dot11.parser import WlanFrameParser
 from airscope.models import AccessPoint, Client
 from airscope.wlan.dedupe import StreamMerger
 from airscope.wlan.interface import WlanInterface
@@ -257,9 +258,23 @@ class WlanArray:
     def record_injected_eapol(self, frame) -> None:
         self._sink.record_injected_eapol(frame)
 
+    def note_own_beacon(self, bssid: str, channel: int, beacon: bytes) -> None:
+        """Create an AP entry for a twin BSSID the sink hasn't heard in the air, so its injected
+        M1s can pair with client M2s. No-op when the entry already exists (e.g. same-BSSID twins)."""
+        if self.access_points.get(bssid) is not None:
+            return
+        pkt = WlanFrameParser.parse_80211_frame(beacon, 0)
+        if isinstance(pkt, BeaconPacket):
+            card = self.members[0].name if self.members else "seed"
+            self._sink.update(pkt, card, channel)
+
     def mark_evil_twin(self, bssid: str) -> None:
         """Hide this BSSID's AP from get_access_points(include_eviltwin=False): it's our own twin."""
         self._evil_twin_bssids.add(bssid.lower())
+
+    def unmark_evil_twin(self, bssid: str) -> None:
+        """Stop hiding a twin BSSID (called when its campaign tears down)."""
+        self._evil_twin_bssids.discard(bssid.lower())
 
     # ----- channel policy ----------------------------------------------------
 

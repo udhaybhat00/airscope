@@ -27,7 +27,7 @@
   }
 </script>
 
-<h2>Devices</h2>
+<h2>⚙ Wi-Fi Devices</h2>
 
 {#if error}
   <div class="error">{error}</div>
@@ -35,11 +35,10 @@
 
 {#if devices.length === 0}
   <div class="empty">
-    <p>○ No supported USB adapters detected.</p>
+    <p>No supported USB adapters detected.</p>
     <p>
-      airscope drives USB Wi-Fi cards directly over USB — it needs at least one
-      adapter from the <strong>supported hardware list</strong>, plus a one-time
-      driver setup (udev rules on Linux, WinUSB on Windows) done through the TUI.
+      Airscope communicates directly with USB Wi-Fi cards. Plug in a supported
+      adapter (see the hardware list) and it will appear here automatically.
     </p>
     <p>
       <a
@@ -61,7 +60,7 @@
           <td>{[d.vendor, d.product].filter(Boolean).join(' ') || '—'}</td>
           <td class="mono">{vidpid(d)}</td>
           <td class="num">{d.bus ?? '—'} / {d.address ?? '—'}</td>
-          <td>{d.attached ? '● attached' : '○ present'}</td>
+          <td>{d.attached ? '● Connected' : '○ Detected'}</td>
         </tr>
       {/each}
     </tbody>

@@ -43,6 +43,7 @@ _SCAN_START_CHANNEL = 1            # first channel tuned at connect
 class RT5372Driver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = list(range(1, 15))   # 2.4 GHz, 20 MHz
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, transport: RT5372Transport):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

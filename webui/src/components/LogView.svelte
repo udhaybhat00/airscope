@@ -1,6 +1,7 @@
 <script lang="ts">
   import { afterUpdate } from 'svelte';
   import { attackLines } from '../lib/stores';
+  import { plainEnglish } from '../lib/log_translate';
 
   let box: HTMLDivElement;
   afterUpdate(() => {
@@ -10,8 +11,8 @@
 
 <div class="log" bind:this={box}>
   {#each $attackLines.slice(-100) as line}
-    <div>{line}</div>
+    <div>{plainEnglish(line)}</div>
   {:else}
-    <div class="empty-inline">○ No attack output yet — start one above.</div>
+    <div class="empty-inline">No attack output yet — start one above.</div>
   {/each}
 </div>

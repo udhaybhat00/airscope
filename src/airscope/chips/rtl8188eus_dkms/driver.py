@@ -54,6 +54,7 @@ def _load_firmware() -> bytes:
 class Rtl8188eusDkmsDriver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = list(chan.CHANNELS_2G)   # 2.4 GHz, 20 MHz
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, transport: Rtl8188eusTransport):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

@@ -3,7 +3,8 @@
   import { api, type ApSnap, type AttackSpec, type Capture } from '../lib/api';
   import { attack } from '../lib/stores';
   import { onEvent } from '../lib/socket';
-  import { encClass, encIcon } from '../lib/format';
+  import { encClass, encIcon, encSuffix } from '../lib/format';
+  import { plainEnglish } from '../lib/log_translate';
   import LogView from './LogView.svelte';
   import Sparkline from './Sparkline.svelte';
 
@@ -28,6 +29,15 @@
     { key: 'inject', label: 'inject', token: '--accent' },
     { key: 'deauth', label: 'deauth', token: '--attack' }
   ];
+
+  const ATTACK_DESC: Record<string, string> = {
+    'deauth': 'Disconnect clients to force reconnection and capture the handshake',
+    'pmkid': 'Target the access point directly — no client needed',
+    'replay': 'Amplify traffic to speed up handshake capture',
+    'eviltwin': 'Create a fake access point — enter the password to verify it',
+    'wps-pixie': 'Offline WPS PIN attack (seconds)',
+    'wps-pin': 'Online WPS PIN brute-force (hours)',
+  };
 
   async function load() {
     try {
@@ -81,9 +91,13 @@
       error = e instanceof Error ? e.message : String(e);
     }
   }
+
+  function clientShort(mac: string): string {
+    return mac.slice(-5).replace(/:/g, '');
+  }
 </script>
 
-<p><a href="#/">← scanner</a></p>
+<nav class="breadcrumb"><a href="#/">📡 Scanner</a> <span class="sep">→</span> <span>Target</span></nav>
 
 {#if error}
   <div class="error">{error}</div>
@@ -92,7 +106,7 @@
 {#if ap}
   <h2>{ap.ssid ?? '<hidden>'} <small class="mono">{ap.bssid} · CH{ap.channel}</small></h2>
   <p>
-    <span class="enc {encClass(ap.encryption)}">{encIcon(ap.encryption)} {ap.encryption}</span>
+    <span class="enc {encClass(ap.encryption)}">{encIcon(ap.encryption)} {ap.encryption}{encSuffix(ap.encryption)}</span>
     · {ap.signal} dBm · {ap.clients.length} clients · {ap.beacons} beacons
   </p>
 
@@ -120,15 +134,23 @@
         title={spec.blocked ?? spec.label}
         onclick={() => (running ? stop() : start(spec.kind))}
       >
-        {running ? `Stop ${spec.label}` : spec.label}
+        <span class="attack-label">{running ? `Stop ${spec.label}` : spec.label}</span>
+        <span class="attack-desc">{ATTACK_DESC[spec.kind] ?? ''}</span>
       </button>
     {/each}
     {#if live}
       <button class="stopall" onclick={stop}>Stop all</button>
     {/if}
   </div>
+  {#if live?.kind === 'eviltwin'}
+    <div class="eviltwin-progress">
+      <div class="step" class:done={live.progress >= 1}>1. Setting up fake AP</div>
+      <div class="step" class:done={live.progress >= 2}>2. Waiting for client to connect</div>
+      <div class="step" class:done={live.progress >= 3}>3. Capturing password</div>
+    </div>
+  {/if}
   {#if attacks.length === 0}
-    <div class="empty">○ No applicable attacks for this AP.</div>
+    <div class="empty">No applicable attacks for this AP.</div>
   {/if}
 
   <h3>Log</h3>
@@ -136,7 +158,7 @@
 
   <h3>Captures ({captures.length})</h3>
   {#if captures.length === 0}
-    <div class="empty">○ Nothing captured yet.</div>
+    <div class="empty">Nothing captured yet.</div>
   {:else}
     <table class="scan">
       <thead><tr><th>Type</th><th>Time</th><th>Records</th><th>Value</th></tr></thead>
@@ -149,5 +171,5 @@
     </table>
   {/if}
 {:else if !error}
-  <div class="empty">○ Loading target…</div>
+  <div class="empty">Loading target…</div>
 {/if}

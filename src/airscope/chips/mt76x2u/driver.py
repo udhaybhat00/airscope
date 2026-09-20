@@ -97,6 +97,7 @@ class MT76x2UDriver(Driver):
         + [149, 153, 157, 161, 165]
     )
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
     LINUX_REPLUG_AFTER_MODPROBE = False   # self-colds: force_power_cycle → cold-equivalent, no replug
 
     @classmethod

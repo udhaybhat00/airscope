@@ -38,6 +38,7 @@ class RTL8922AUDriver(Driver):
     # bench-confirmed the card still monitors foreign/toDS traffic and ACKs only the armed MAC.
     # [SRC] cam.c:819 (SMA = the vif's own mac_addr, matched against a received frame's addr1).
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     # On a USB-2 port the rtw89 mode switch re-enumerates the card mid-connect(); connect() re-acquires
     # its own handle, so no user action is needed. [SRC] usb.c rtw89_usb_switch_mode_be.

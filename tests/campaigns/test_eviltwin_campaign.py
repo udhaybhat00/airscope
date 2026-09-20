@@ -1,45 +1,59 @@
-"""EvilTwinCampaign: arms the twin, punts the target channel, auto-stops on a crackable handshake,
-and tears down. Plus the WlanSink M1-seed hook that lets our injected M1 pair with the client's M2.
-"""
+"""EvilTwinCampaign (reimplemented): Step 1 captures a real crackable handshake first, Step 2 runs
+the WPA2-only twin + rapid deauth on the target's channel, Step 3 recovers the PSK online by
+MIC-checking the twin's M2 against a candidate feed (rockyou + vault seeds), saving it as an
+EVILTWIN_PSK without any external cracker."""
 import asyncio
 import struct
 from types import SimpleNamespace
 
-from airscope.campaigns.campaign import Campaign
+import pytest
+
+import airscope.campaigns.eviltwin.campaign as camp_mod
+from airscope.campaigns import eviltwin as etwin
 from airscope.campaigns.eviltwin import (
-    EvilTwinCampaign, EvilTwinInput, PuntMode, default_punt_modes, csa_target_channel,
+    EvilTwinCampaign, EvilTwinInput,
 )
+from airscope.campaigns.eviltwin.campaign import _CandidateFeed
+from airscope.crack.external import iter_candidates
+from airscope.crack.wpa_psk import mic_for
 from airscope.dot11.ap import eapol_m1
-from airscope.dot11.eapol import eapol_key, data_header, LLC_SNAP_EAPOL
+from airscope.dot11.eapol import data_header, eapol_key, LLC_SNAP_EAPOL
 from airscope.dot11.ie import ssid_ie, rates_ie, ds_param_ie, GENERIC_RSN_IE
 from airscope.dot11.parser import WlanFrameParser
-from airscope.crack.handshake import crackable_pairs
-from airscope.models import Handshake, HandshakeMessage
+from airscope.dot11.packet import BeaconPacket
 from airscope.wlan.sink import WlanSink
 
 _BSSID = "94:83:c4:8c:3f:78"
 _BSSID_B = bytes.fromhex("9483c48c3f78")
-_CLIENT = "02:aa:bb:cc:dd:ee"
-_CLIENT_B = bytes.fromhex("02aabbccddee")
+_TWIN = "02:00:00:00:00:01"
+_TWIN_B = bytes.fromhex("020000000001")
+_CLIENT = "aa:bb:cc:dd:ee:01"
+_CLIENT_B = bytes.fromhex("aabbccddee01")
+_SNONCE = bytes.fromhex("0f" * 32)
+_ANONCE = bytes.fromhex("e7" * 32)
 _BROADCAST = b"\xff" * 6
 _SSID = "GL-Test"
-_FIXED = struct.pack("<Q", 0) + struct.pack("<H", 100) + b"\x11\x04"   # TSF, interval, cap (ESS+Privacy)
+_PASSWORD = "correct horse"
+_FIXED = struct.pack("<Q", 0) + struct.pack("<H", 100) + b"\x11\x04"
 _BEACON = (b"\x80\x00\x00\x00" + _BROADCAST + _BSSID_B + _BSSID_B + b"\x00\x00"
            + _FIXED + ssid_ie(_SSID) + rates_ie() + ds_param_ie(11) + GENERIC_RSN_IE)
+_TWIN_BEACON = _BEACON[:10] + _TWIN_B + _TWIN_B + _BEACON[22:]
 
 
 class _FakeIface:
-    def __init__(self, channel: int = 1):
+    def __init__(self):
         self.sent: list[bytes] = []
-        self.current_channel = channel
+        self.current_channel = 11
         self.fake_mac_arms = 0
         self.fake_mac_clears = 0
+        self.deauths: list[tuple] = []
+        self.broadcasts = 0
 
     async def send_no_wait(self, frame: bytes) -> bool:
         self.sent.append(bytes(frame))
         return True
 
-    async def set_channel(self, channel: int, scan: bool = False) -> bool:
+    async def set_channel(self, channel, scan=False) -> bool:
         self.current_channel = channel
         return True
 
@@ -56,29 +70,48 @@ class _FakeIface:
     def unregister_rx_callback(self, cb) -> None:
         pass
 
+    async def deauth_client(self, bssid: str, mac, rounds: int) -> None:
+        self.deauths.append((bssid, mac, rounds))
+
+    async def deauth_broadcast(self, bssid: str, count: int) -> None:
+        self.broadcasts += 1
+
 
 class _FakeArray:
     def __init__(self):
-        self.access_points: dict = {}
-        self.clients: dict = {}
-        self.seeded_m1: list[bytes] = []
-        self.stray_beacons: dict = {}
-        self.evil_twins: set = set()
+        self.sink = WlanSink()
+        self._stray = {}
+        self._twins = set()
 
-    def select_iface(self, channel):
-        return None
+    @property
+    def access_points(self):
+        return self.sink.access_points
+
+    @property
+    def clients(self):
+        return self.sink.clients
 
     def record_injected_eapol(self, frame) -> None:
-        self.seeded_m1.append(bytes(frame))
+        self.sink.record_injected_eapol(frame)
+
+    def note_own_beacon(self, bssid, channel, beacon) -> None:
+        if bssid in self.access_points:
+            return
+        pkt = WlanFrameParser.parse_80211_frame(beacon, 0)
+        if isinstance(pkt, BeaconPacket):
+            self.sink.update(pkt, "seed", channel)
 
     def ignore_stray_beacons(self, bssid, channel) -> None:
-        self.stray_beacons[bssid] = channel
+        self._stray[bssid] = channel
 
     def stop_ignoring_stray_beacons(self, bssid) -> None:
-        self.stray_beacons.pop(bssid, None)
+        self._stray.pop(bssid, None)
 
     def mark_evil_twin(self, bssid) -> None:
-        self.evil_twins.add(bssid)
+        self._twins.add(bssid)
+
+    def unmark_evil_twin(self, bssid) -> None:
+        self._twins.discard(bssid)
 
 
 def _target():
@@ -86,147 +119,197 @@ def _target():
                            last_beacon_frame=_BEACON, akm_suites=[2])
 
 
-def _input(twin, punt, modes=(PuntMode.DEAUTH, PuntMode.CSA), period=0.5, bssid=_BSSID):
-    return EvilTwinInput(twin_iface=twin, punt_iface=punt, twin_channel=1, twin_bssid=bssid,
-                         punt_modes=modes, punt_period_sec=period)
+def _input(twin, punt, bssid=_BSSID):
+    return EvilTwinInput(twin_iface=twin, punt_iface=punt, twin_channel=999,
+                         twin_bssid=bssid)
 
 
-def _crackable_hs():
-    hs = Handshake(bssid=_BSSID, client_mac=_CLIENT, beacon_frame=_BEACON, akm_offered=[2])
-    hs.messages.append(HandshakeMessage(raw=b"", msg_num=1, replay_hex="0000000000000005",
-                                        nonce=b"\xaa" * 32, mic=bytes(16), key_data_len=0,
-                                        eapol_payload=bytes(120), timestamp=1.0))
-    hs.messages.append(HandshakeMessage(raw=b"", msg_num=2, replay_hex="0000000000000005",
-                                        nonce=b"\x02" * 32, mic=b"\x11" * 16, key_data_len=0,
-                                        eapol_payload=bytes(120), akm=2, timestamp=1.1))
-    return hs
+def _seed_single_handshake(array, ap_bssid: str, anonce=_ANONCE, snonce=_SNONCE):
+    """A crackable M1+M2 pair under ``ap_bssid`` via the real sink, plus the AP entry."""
+    bssid_b = bytes.fromhex(ap_bssid.replace(":", ""))
+    beacon = _BEACON if ap_bssid == _BSSID else _TWIN_BEACON
+    if ap_bssid not in array.access_points:
+        array.note_own_beacon(ap_bssid, 11, beacon)
+    array.record_injected_eapol(eapol_m1(bssid_b, _CLIENT_B, anonce, replay=1))
+    client_mic = mic_for(_PASSWORD, _SSID, bssid_b, _CLIENT_B, anonce, snonce,
+                         eapol_key(key_info=0x010A, key_len=0, replay=1, nonce=snonce,
+                                   key_data=GENERIC_RSN_IE, mic=bytes(16)))
+    m2 = data_header(to_ds=True, bssid=bssid_b, client=_CLIENT_B) + LLC_SNAP_EAPOL + eapol_key(
+        key_info=0x010A, key_len=0, replay=1, nonce=snonce, key_data=GENERIC_RSN_IE,
+        mic=client_mic)
+    array.sink.update(WlanFrameParser.parse_80211_frame(m2, -40), "seed", 11)
 
 
-def _pmkid_hs():
-    hs = Handshake(bssid=_BSSID, client_mac=_CLIENT, beacon_frame=_BEACON, akm_offered=[2])
-    hs.pmkid, hs.pmkid_akm = b"\x33" * 16, 2       # crackable PSK PMKID, no 4-way pairs
-    return hs
+# ----- step 1: a real handshake first ---------------------------------------
 
-
-def _client_m2(snonce: bytes) -> bytes:
-    payload = eapol_key(key_info=0x010A, key_len=0, replay=1, nonce=snonce, key_data=GENERIC_RSN_IE,
-                        mic=bytes(range(16)))
-    return data_header(to_ds=True, bssid=_BSSID_B, client=_CLIENT_B) + LLC_SNAP_EAPOL + payload
-
-
-def test_visible_and_ineligible():
-    assert EvilTwinCampaign.visible(_target())
-    assert EvilTwinCampaign.visible(SimpleNamespace(ssid=None, akm_suites=[2])) is False
+def test_visible_requires_psk_akm():
+    assert EvilTwinCampaign.visible(_target()) is True
     assert EvilTwinCampaign.visible(SimpleNamespace(ssid="x", akm_suites=[])) is False
+    assert EvilTwinCampaign.visible(SimpleNamespace(ssid=None, akm_suites=[2])) is False
+    sae = SimpleNamespace(ssid="WPA3", akm_suites=[8])
+    assert EvilTwinCampaign.visible(sae) is False                # pure WPA3/SAE: no PSK handshake
+    trans = SimpleNamespace(ssid="Mixed", akm_suites=[2, 8])
+    assert EvilTwinCampaign.visible(trans) is True               # WPA3-transition keeps PSK
+
+
+def test_ineligible_reason():
     no_beacon = SimpleNamespace(bssid=_BSSID, ssid=_SSID, channel=11,
                                 last_beacon_frame=None, akm_suites=[2])
     assert EvilTwinCampaign.ineligible_reason(no_beacon) == "no beacon captured yet"
     assert EvilTwinCampaign.ineligible_reason(_target()) is None
 
 
-def test_default_punt_modes():
-    assert default_punt_modes(SimpleNamespace(pmf_required=True)) == (PuntMode.CSA,)
-    assert default_punt_modes(SimpleNamespace(pmf_required=False)) == (
-        PuntMode.DEAUTH, PuntMode.CSA, PuntMode.BTM)
+def test_default_punt_modes_are_empty_now():
+    assert etwin.default_punt_modes(SimpleNamespace(pmf_required=True)) == ()
+    assert etwin.default_punt_modes(SimpleNamespace(pmf_required=False)) == ()
 
 
-def test_csa_target_channel():
-    assert csa_target_channel(1) == 6                 # 2.4G decoy
-    assert csa_target_channel(11) == 1
-    assert csa_target_channel(36) == 40               # 5G target stays in-band
-    assert csa_target_channel(11, 1) == 1             # preferred honored when off the AP's channel
-    assert csa_target_channel(11, 11) == 1            # preferred == AP channel -> decoy (the no-op guard)
+def test_csa_target_channel_still_valid():
+    assert etwin.csa_target_channel(1) == 6
+    assert etwin.csa_target_channel(11) == 1
+    assert etwin.csa_target_channel(36) == 40
+    assert etwin.csa_target_channel(11, 1) == 1
+    assert etwin.csa_target_channel(11, 11) == 1
 
 
-async def test_own_bssid_marks_twin_and_keys_capture_on_it():
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    own_b = bytes.fromhex("9483c48c3f79")            # target BSSID + 1 nibble: an own-BSSID twin
-    own_s = "94:83:c4:8c:3f:79"
-    array.access_points[own_s] = SimpleNamespace(handshakes={_CLIENT: _crackable_hs()})
-    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, modes=(PuntMode.CSA,), bssid=own_s))
+def test_twin_mirrors_target_channel_and_rewrites_bssid():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    assert camp.twin_channel == 11                      # input said 999: Step 2 pins the target's
     assert camp.same_bssid is False
-    assert camp.twin_bssid == own_s
-    assert camp.twin_beacon[10:16] == own_b and camp.twin_beacon[16:22] == own_b  # Addr2/Addr3 rewritten
-    await asyncio.wait_for(camp._loop(), timeout=1.0)   # exits at once: capture is on the twin entry
-    assert own_s in array.evil_twins                    # hidden from the scanner
-    await camp.teardown()
-    assert own_s in array.evil_twins                    # stays hidden after teardown (no re-attack)
-    assert camp.captured
+    assert camp.twin_bssid == _TWIN
+    assert camp.twin_beacon[10:16] == _TWIN_B and camp.twin_beacon[16:22] == _TWIN_B
 
 
-async def test_arms_punts_and_tears_down():
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    array.access_points[_BSSID] = SimpleNamespace(handshakes={})   # nothing crackable yet
-    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, modes=(PuntMode.DEAUTH, PuntMode.CSA)))
+def test_same_bssid_twin_impersonates_and_keeps_beacon():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_BSSID))
+    assert camp.same_bssid is True
+    assert camp.twin_beacon[10:16] == _BSSID_B          # no BSSID rewrite: it is the target's
+
+
+def test_constructor_requires_beacon_and_ssid():
+    array = _FakeArray()
+    ap = SimpleNamespace(bssid=_BSSID, ssid=_SSID, channel=11,
+                         last_beacon_frame=None, akm_suites=[2])
+    with pytest.raises(ValueError):
+        EvilTwinCampaign(array, ap, _input(_FakeIface(), _FakeIface(), _BSSID))
+    ap = SimpleNamespace(bssid=_BSSID, ssid=None, channel=11,
+                         last_beacon_frame=_BEACON, akm_suites=[2])
+    with pytest.raises(ValueError):
+        EvilTwinCampaign(array, ap, _input(_FakeIface(), _FakeIface(), _BSSID))
+
+
+def test_first_capture_is_mandatory_before_twin(monkeypatch):
+    """Step 1 deauths the target until a crackable real handshake lands; the twin stays unarmed."""
+    monkeypatch.setattr(camp_mod, "_REFERENCE_TIMEOUT_SEC", 0.05)
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    assert asyncio.run(camp._capture_reference()) is False   # timed out, nothing crackable
+    assert punt.broadcasts > 0                              # Step 1 is the deauth kick
+    assert twin.fake_mac_arms == 0                          # twin not armed yet
+
+
+def test_step1_ends_immediately_with_existing_real_handshake():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    _seed_single_handshake(array, _BSSID)
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    assert camp._crackable_instances(_BSSID)            # the real AP already holds M1+M2
+    assert asyncio.run(camp._capture_reference()) is True
+    assert punt.broadcasts == 0                         # nothing to deauth: step 1 already won
+
+
+def test_loop_aborts_before_twin_when_reference_proves_impossible(monkeypatch):
+    monkeypatch.setattr(camp_mod, "_REFERENCE_TIMEOUT_SEC", 0.05)
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    assert asyncio.run(camp._loop()) is None
+    assert twin.fake_mac_arms == 0                      # Step 1 gate stopped everything
+
+
+# ----- step 2: twin + rapid deauth ------------------------------------------
+
+async def test_rapid_deauth_cadence(monkeypatch):
+    monkeypatch.setattr(camp_mod, "_DEAUTH_PERIOD_SEC", 0.02)
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    array.clients[_CLIENT] = SimpleNamespace(mac=_CLIENT, bssid=_BSSID)
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    task = camp._deauth_loop()
+    for _ in range(300):
+        await asyncio.sleep(0.01)
+        if punt.broadcasts >= 3 and punt.deauths:
+            break
+    task.cancel()
+    assert punt.broadcasts >= 3                         # a disqual round every _DEAUTH_PERIOD_S
+    assert punt.deauths                                 # client-targeted deauths too
+
+
+async def test_step2_arms_twin_seeds_entry_and_hides_twin():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    await camp._step2_run_twin()
+    assert twin.fake_mac_arms == 1
+    assert _TWIN in array._twins                        # hidden from the scanner
+    assert _TWIN in array.access_points                 # an AI entry so M2s pair with our M1
+    await camp.fakeap.stop()
+
+
+# ----- step 3: online MIC recovery -------------------------------------------
+
+def _fed(*passwords) -> _CandidateFeed:
+    return _CandidateFeed(iter_candidates(None, list(passwords)))
+
+
+async def test_online_mic_match_recovers_and_saves_eviltwin_psk(monkeypatch):
+    saved = []
+    monkeypatch.setattr(camp_mod, "save_eviltwin_psk",
+                        lambda ap, psk: saved.append((ap.bssid, ap.ssid, psk))
+                        or SimpleNamespace(what_captured="EvilTwin PSK"))
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    _seed_single_handshake(array, _TWIN)
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    camp._candidates = _fed("wrong1", "wrong2", _PASSWORD)
+    recovered = []
+    camp.on_recovered = recovered.append
+    await asyncio.wait_for(camp._step3_recover(), timeout=2)
+    assert camp.password == _PASSWORD and camp.captured
+    assert saved == [(_BSSID, _SSID, _PASSWORD)]        # PRK lands as EVILTWIN_PSK
+    assert recovered == [_PASSWORD]                     # the UI toast callback fired
+    assert camp._checked_m2 == 1
+    assert any(_is_m3(f) for f in twin.sent)            # the 4-way closed with a real M3
+
+
+def test_online_miss_disconnects_and_reports_exhausted():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    _seed_single_handshake(array, _TWIN)
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
+    camp._candidates = _fed("nope1", "nope2")
+    assert asyncio.run(camp._step3_recover()) is None
+    assert camp.password is None
+    assert twin.sent                                  # a disassociate went to the client
+    assert camp._candidates.done                       # the single pass is spent (not retried)
+
+
+async def test_loop_runs_then_tears_down_cleanly():
+    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface()
+    _seed_single_handshake(array, _BSSID)              # step 1 wins instantly
+    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, bssid=_TWIN))
     task = asyncio.create_task(camp._loop())
-    await asyncio.sleep(0.05)
+    for _ in range(300):
+        await asyncio.sleep(0.01)
+        if twin.fake_mac_arms and (punt.broadcasts >= 1 or punt.deauths):
+            break
+    assert twin.fake_mac_arms == 1                     # twin stood up
+    assert punt.broadcasts >= 1 or punt.deauths        # deauth loop running
     camp.stopped = True
-    await task
+    await asyncio.wait_for(task, timeout=2)
     await camp.teardown()
-    assert twin.fake_mac_arms >= 1                    # twin armed on the exact BSSID
-    assert twin.current_channel == 11                 # restored to the target channel on teardown
-    assert twin.sent                                  # twin beaconed
-    assert punt.current_channel == 11 and punt.sent   # punt ran on the target channel
-    assert twin.fake_mac_clears == 1                  # torn down once
-    assert not camp.captured
+    assert twin.fake_mac_clears == 1                   # FakeAP.stop() ran
+    assert _TWIN not in array._twins                   # twin un-hidden on teardown
 
 
-async def test_stops_when_sink_has_crackable_handshake():
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    array.access_points[_BSSID] = SimpleNamespace(handshakes={_CLIENT: _crackable_hs()})
-    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, modes=(PuntMode.DEAUTH, PuntMode.CSA)))
-    await asyncio.wait_for(camp._loop(), timeout=1.0)   # exits at once: already captured
-    await camp.teardown()
-    assert camp.captured
-    assert twin.fake_mac_arms >= 1                     # twin still stood up
-    assert punt.sent == []                             # never punted: capture was already there
+# ----- helpers -----------------------------------------------------------------
 
-
-async def test_stops_on_real_ap_handshake_with_distinct_twin():
-    # Single-card/distinct twin: a 4-way sniffed on the REAL AP (target BSSID) after a punt kicks a
-    # client back onto it also completes, not just a forged M2 on the twin's own BSSID.
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    array.access_points[_BSSID] = SimpleNamespace(handshakes={_CLIENT: _crackable_hs()})
-    camp = EvilTwinCampaign(array, _target(),
-                            _input(twin, punt, modes=(PuntMode.DEAUTH,), bssid="94:83:c4:8c:3f:79"))
-    assert camp.same_bssid is False
-    await asyncio.wait_for(camp._loop(), timeout=1.0)
-    assert camp.captured
-
-
-async def test_stops_on_crackable_pmkid():
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    array.access_points[_BSSID] = SimpleNamespace(handshakes={_CLIENT: _pmkid_hs()})
-    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, modes=(PuntMode.DEAUTH,)))
-    await asyncio.wait_for(camp._loop(), timeout=1.0)
-    assert camp.captured
-
-
-def test_record_injected_m1_pairs_with_real_m2():
-    sink = WlanSink()
-    sink.update(WlanFrameParser.parse_80211_frame(_BEACON, -40), "card0", 11)
-    ap = sink.access_points[_BSSID]
-    assert ap.akm_suites == [2] and ap.last_beacon_frame == _BEACON
-
-    sink.record_injected_eapol(eapol_m1(_BSSID_B, _CLIENT_B, b"\xaa" * 32, replay=1))
-    sink.update(WlanFrameParser.parse_80211_frame(_client_m2(b"\x02" * 32), -40), "card0", 11)
-
-    hs = ap.handshakes[_CLIENT]
-    assert {m.msg_num for m in hs.messages} == {1, 2}
-    assert crackable_pairs(hs)
-
-
-async def test_run_drives_loop_and_restores_channel():
-    array, twin, punt = _FakeArray(), _FakeIface(), _FakeIface(11)
-    array.select_iface = lambda channel: punt        # the base _drive liveness election
-    array.access_points[_BSSID] = SimpleNamespace(handshakes={})
-    camp = EvilTwinCampaign(array, _target(), _input(twin, punt, modes=(PuntMode.CSA,)))
-    try:
-        assert camp.run() is True                    # claims the radio, schedules _drive
-        await asyncio.sleep(0.05)
-        await camp.stop()                            # cooperative stop, awaits teardown
-    finally:
-        Campaign.active = None
-    assert twin.fake_mac_arms >= 1                    # _loop actually ran (not skipped)
-    assert twin.current_channel == 11                # teardown restored the twin channel
-    assert punt.sent                                 # the CSA punt went out the TX card
+def _is_m3(frame: bytes) -> bool:
+    pkt = WlanFrameParser.parse_80211_frame(frame, 0)
+    return getattr(pkt, "type", None) == "eapol" and getattr(pkt, "msg_num", None) == 3

@@ -1,6 +1,6 @@
 <script lang="ts">
   import type { ApSnap } from '../lib/api';
-  import { encClass, encIcon } from '../lib/format';
+  import { encClass, encIcon, encSuffix } from '../lib/format';
   import { marked } from '../lib/stores';
 
   interface Props {
@@ -34,7 +34,7 @@
       <th>SSID</th>
       <th class="num">CH</th>
       <th>ENC</th>
-      <th class="num">CLIENTS</th>
+      <th class="num">📱 CLIENTS</th>
       <th class="num">BEACONS</th>
     </tr>
   </thead>
@@ -60,9 +60,9 @@
           </span>
           {ap.signal} dBm
         </td>
-        <td>{ap.ssid ?? '<hidden>'}</td>
+        <td>{ap.ssid ?? '<hidden>'}{stale(ap) ? ' · not seen recently' : ''}</td>
         <td class="num">{ap.channel}</td>
-        <td><span class="enc {encClass(ap.encryption)}">{encIcon(ap.encryption)} {ap.encryption}</span></td>
+        <td><span class="enc {encClass(ap.encryption)}">{encIcon(ap.encryption)} {ap.encryption}{encSuffix(ap.encryption)}</span></td>
         <td class="num">{ap.clients.length || ''}</td>
         <td class="num">{ap.beacons}</td>
       </tr>
@@ -71,5 +71,5 @@
 </table>
 
 {#if sorted.length === 0}
-  <div class="empty">○ No access points in range — waiting for the scan…</div>
+  <div class="empty">No adapter detected — plug in a supported USB Wi-Fi adapter and start scanning.</div>
 {/if}

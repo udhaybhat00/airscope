@@ -107,7 +107,7 @@ class FilterBar(Horizontal):
             allow_blank=False, id="filter-encryption", compact=True,
         )
         yield Button(self._channels_text(None), id="filter-channels", compact=True)
-        yield Input(placeholder="filter by ssid…", id="filter-text", compact=True)
+        yield Input(placeholder="Search by network name...", id="filter-text", compact=True)
 
     def focus_text(self) -> None:
         self.query_one("#filter-text", Input).focus()

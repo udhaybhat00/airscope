@@ -59,6 +59,7 @@ def _load_firmware() -> bytes:
 class Rtl8821auDkmsDriver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G_NON_DFS
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, transport: RTL8821AUDkmsTransport):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

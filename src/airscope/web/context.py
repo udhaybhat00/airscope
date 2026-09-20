@@ -361,17 +361,16 @@ class HeadlessContext:
 
     async def _start_eviltwin(self, ap, punt: bool) -> dict:
         from airscope.campaigns.eviltwin import (
-            EvilTwinCampaign, EvilTwinInput, csa_target_channel, default_punt_modes)
+            EvilTwinCampaign, EvilTwinInput, default_punt_modes)
         try:
-            twin_channel = csa_target_channel(ap.channel)
-            iface = self.array.select_iface(twin_channel) or self.array.select_iface(ap.channel)
+            iface = self.array.select_iface(ap.channel) or self.array.select_iface(ap.channel)
             if iface is None:
                 raise _Blocked("no card reaches the target band")
             evil = EvilTwinInput(
-                twin_iface=iface, punt_iface=iface, twin_channel=twin_channel,
+                twin_iface=iface, punt_iface=iface, twin_channel=ap.channel,
                 twin_bssid=ap.bssid,
                 punt_modes=default_punt_modes(ap) if punt else (),
-                csa_channel=None, punt_period_sec=30.0, punt_once=False)
+                csa_channel=None, punt_period_sec=None, punt_once=False)
             camp = EvilTwinCampaign(self.array, ap, evil)
         except ValueError as e:
             raise _Blocked(str(e))

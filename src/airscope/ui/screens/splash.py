@@ -74,6 +74,24 @@ def device_list_labels(devices, bands=None) -> list:
     return labels
 
 
+def device_capability_line(dev) -> str:
+    """One-line capability summary for a device card."""
+    try:
+        from airscope.chips.driver import FakeMacSupport
+        from airscope.device.manager import supported_ids
+        for claim in supported_ids().values():
+            if claim.entry.chipset != dev.chipset:
+                continue
+            driver_cls = claim.import_driver()
+            fake_mac = getattr(driver_cls, "FAKE_MAC", FakeMacSupport.NONE)
+            if fake_mac not in (FakeMacSupport.NONE, FakeMacSupport.UNIMPLEMENTED):
+                return "[dim]Can create fake networks ✓[/dim]"
+            return "[dim]Listen and inject only[/dim]"
+    except Exception:
+        pass
+    return ""
+
+
 def _band_badge(bands: Optional[tuple]) -> str:
     """Trailing band badge for a ``(2.4 GHz, 5 GHz)`` pair; ``""`` when unknown."""
     if not bands:
@@ -126,7 +144,7 @@ class SplashView(Screen):
 
     BINDINGS = [
         ("q", "app.quit", "Quit"),
-        ("v", "vault", "Vault"),
+        ("v", "vault", "Captured Results"),
         Binding("enter", "enter", "Start", priority=True),
     ]
 
@@ -155,6 +173,8 @@ class SplashView(Screen):
     SplashView #button-row { height: auto; margin-top: 1; }
     SplashView #button-row Button { width: auto; min-width: 11; }
     SplashView #status-label { content-align: center middle; margin-bottom: 1; }
+    SplashView #heading-label { content-align: center middle; text-style: bold; margin-bottom: 0; }
+    SplashView #help-strip { content-align: center middle; height: 1; margin-top: 1; }
     """
 
     def __init__(self):
@@ -169,6 +189,9 @@ class SplashView(Screen):
             with Center():
                 yield Static(self._logo(), id="ascii-art")
             with Center():
+                yield Label("[bold]Choose your Wi-Fi adapter to get started[/bold]",
+                            id="heading-label")
+            with Center():
                 yield Label("[dim]○ Scanning for compatible hardware…[/dim]", id="status-label")
             with Center():
                 # Persistent failure line. render_devices only touches #status-label, so an error
@@ -182,11 +205,16 @@ class SplashView(Screen):
                     yield SelectionList(id="device-select")
             with Center():
                 with Horizontal(id="button-row"):
-                    yield Button("START", id="start-btn", variant="success")
+                    yield Button("Start Scanning", id="start-btn", variant="success")
                     # Reverses airscope's driver/access changes for the highlighted card.
                     yield Button("Uninstall", id="uninstall-btn", variant="error")
-                    yield Button("Vault", id="vault-btn")
-                    yield Button("Prefs", id="prefs-btn")
+                    yield Button("Captured Results", id="vault-btn")
+                    yield Button("Settings", id="prefs-btn")
+            with Center():
+                yield Label(
+                    "[dim]Plug in your supported USB Wi-Fi adapter and select it here "
+                    "to begin scanning nearby networks[/dim]",
+                    id="help-strip")
         yield Footer()
 
     def _both_lists(self):
@@ -256,8 +284,10 @@ class SplashView(Screen):
             multi_list.display = True
         else:
             single_list.clear()
-            for i, label in enumerate(labels):
-                single_list.append(ListItem(Label(label), name=str(i)))
+            for i, dev in enumerate(labels):
+                cap = device_capability_line(devices[i]) if devices else ""
+                item_label = Label(f"{dev}\n{cap}") if cap else Label(dev)
+                single_list.append(ListItem(item_label, name=str(i)))
             multi_list.display = False
             single_list.display = True
 
@@ -278,7 +308,8 @@ class SplashView(Screen):
                     single_list.index = 0
                 single_list.focus()
         else:
-            status.update("[dim]○ Scanning for compatible hardware…[/dim]")
+            status.update("[dim]No adapter detected — plug in a supported USB Wi-Fi adapter. "
+                          "See docs/SUPPORTED-HARDWARE.md for compatible devices.[/dim]")
             start_btn.disabled = True
             uninstall_btn.disabled = True
 

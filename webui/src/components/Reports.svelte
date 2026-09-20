@@ -2,22 +2,22 @@
   import { api } from '../lib/api';
 
   const KINDS = [
-    { kind: 'csv', label: 'CSV', hint: 'airodump-style AP + station tables' },
-    { kind: 'netxml', label: 'netXML', hint: 'Kismet-compatible network + client tree' },
-    { kind: 'cracked', label: 'cracked.txt', hint: 'one AP + PSK per recovered credential' },
-    { kind: 'html', label: 'HTML report', hint: 'scan summary, captures, cracks, batch steps' }
+    { kind: 'csv', label: '📄 CSV Spreadsheet', hint: 'Network list and device tables in spreadsheet format — open in Excel or Google Sheets.' },
+    { kind: 'netxml', label: '🗺 netXML (Kismet)', hint: 'Network and client data in Kismet-compatible format for further analysis.' },
+    { kind: 'cracked', label: '🔑 Cracked Passwords', hint: 'One network name and password per line — share with your team or import into other tools.' },
+    { kind: 'html', label: '📊 HTML Report', hint: 'Full visual summary with scan results, captures, cracks, and batch attack steps.' }
   ];
 </script>
 
-<h2>Reports</h2>
-<p>Generated on the fly from the live array plus VAULT.</p>
+<h2>📤 Export Results</h2>
+<p class="hint">Generated on the fly from your live scan data and captured results.</p>
 
 <div class="cards">
   {#each KINDS as k (k.kind)}
     <section class="card">
       <h3>{k.label}</h3>
       <p>{k.hint}</p>
-      <a class="btn" href={api.exportUrl(k.kind)} download>Download</a>
+      <a class="btn" href={api.exportUrl(k.kind)} download>↓ Download</a>
     </section>
   {/each}
 </div>

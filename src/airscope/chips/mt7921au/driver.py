@@ -44,6 +44,7 @@ class MT7921AUDriver(Driver):
     # (An earlier read of ~120 EAPOL per WPS PBC and openwrt/mt76#839 suggested otherwise;
     # the direct auto-ACK bench overrides it.)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     # Device setup installs the udev rule + modprobe blocklist, but neither applies until the next
     # device-add — until then the kernel's mt7921u still owns the interface and our claim/control

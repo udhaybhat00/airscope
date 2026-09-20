@@ -34,6 +34,13 @@
     return (c.type === 'HS' || c.type === 'PMKID') && c.record_count > 0;
   }
 
+  function captureLabel(type: string): string {
+    if (type === 'HS') return '4-Way Handshake';
+    if (type === 'PMKID') return 'PMKID Capture';
+    if (type === 'PSK') return 'Recovered PSK';
+    return type;
+  }
+
   async function remove(path: string) {
     try {
       await api.deleteCapture(path);
@@ -64,23 +71,26 @@
     for (const [, entry] of $cracks) {
       if (entry.job.path === path && entry.job.state === 'running') {
         const pct = entry.total ? Math.round((100 * entry.tested) / entry.total) : 0;
-        return `${entry.tested}/${entry.total} (${pct}%) ${entry.speed}`;
+        return `Cracking… ${entry.tested.toLocaleString()} / ${entry.total.toLocaleString()} passwords (${pct}%) ${entry.speed}`;
       }
-      if (entry.job.path === path && entry.psk) return `Cracked: ${entry.psk}`;
+      if (entry.job.path === path && entry.psk) return `✓ Password recovered: ${entry.psk}`;
       if (entry.job.path === path) return entry.job.state;
     }
     return '';
   }
 </script>
 
-<h2>Vault</h2>
+<h2>📋 Captured Results</h2>
+<p class="hint">Handshakes, PMKIDs, and recovered passwords from your scans.</p>
 
 {#if error}
   <div class="error">{error}</div>
 {/if}
 
 {#if groups.length === 0}
-  <div class="empty">○ No captures yet — run the scanner, pick a target, capture.</div>
+  <div class="empty">
+    No captured handshakes yet — go to the <a href="#/">Scanner</a> tab, pick a network, and capture.
+  </div>
 {:else}
   {#each groups as g (g.bssid)}
     <section class="vault-ap">
@@ -90,12 +100,12 @@
         <tbody>
           {#each g.captures as c (c.path)}
             <tr>
-              <td>{c.type}</td>
+              <td>{captureLabel(c.type)}</td>
               <td class="num">{c.record_count}</td>
               <td>{c.has_value ? '✓ saved' : ''}</td>
               <td class="actions">
-                <a class="btn" href={api.downloadUrl(c.path)} download>↓</a>
-                <button class="btn danger" onclick={() => remove(c.path)}>✕</button>
+                <a class="btn" href={api.downloadUrl(c.path)} download>↓ Download</a>
+                <button class="btn danger" onclick={() => remove(c.path)}>✕ Remove</button>
                 {#if crackable(c)}
                   <input
                     placeholder="/usr/share/wordlists/rockyou.txt"
@@ -103,7 +113,7 @@
                     oninput={(e) => (wordlists[c.path] = e.currentTarget.value)}
                   />
                   <button class="btn" disabled={starting === c.path} onclick={() => crack(c.path)}>
-                    {starting === c.path ? '…' : 'Crack'}
+                    {starting === c.path ? 'Starting…' : '🔍 Crack'}
                   </button>
                   {#if progress(c.path)}
                     <span class="crack-progress">{progress(c.path)}</span>

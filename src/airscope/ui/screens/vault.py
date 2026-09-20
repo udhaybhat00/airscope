@@ -64,7 +64,7 @@ class VaultView(Screen):
     def on_mount(self) -> None:
         table = self.query_one("#vault-aps", DataTable)
         table.cursor_type = "row"
-        table.add_columns("ESSID", "Captures", "Keys")
+        table.add_columns("ESSID", "Handshakes", "Passwords")
         self._reload_table()
 
     def on_screen_resume(self) -> None:
@@ -105,7 +105,7 @@ class VaultView(Screen):
         return str(n) if n else ""
 
     def _update_title(self) -> None:
-        self.query_one("#vault-aps", DataTable).border_title = f"VAULT ({len(self._aps)} APs)"
+        self.query_one("#vault-aps", DataTable).border_title = f" Captured Results ({len(self._aps)} networks)"
 
     def _load_widget(self, bssid: str) -> None:
         widget = self.query_one("#vault-item", VaultItemView)

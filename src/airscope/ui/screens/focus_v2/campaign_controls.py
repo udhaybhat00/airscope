@@ -18,18 +18,22 @@ class CampaignControls:
         return self._campaign
 
     def start(self, campaign: type[Campaign], array, ap, *,
-              log=None, evil_input: Optional[EvilTwinInput] = None) -> Optional[Campaign]:
+              log=None, evil_input: Optional[EvilTwinInput] = None,
+              recovered: Optional[object] = None) -> Optional[Campaign]:
         """Construct and run one campaign, None if another campaign is active.
 
         Constructors differ per campaign (intentionally not unified): wep takes
         ``log_callback``, EvilTwin takes its ``evil_input`` dataclass, the rest take ``log``.
+        ``recovered`` is set on EvilTwin before it runs, so a live MIC win can toast immediately.
         """
         if Campaign.active is not None or self._campaign is not None:
             return None
         if campaign is WepCampaign:
             inst = campaign(array, ap, log_callback=log)
         elif campaign is EvilTwinCampaign:
-            inst = campaign(array, ap, evil_input)
+            inst = campaign(array, ap, evil_input, log=log)
+            if recovered is not None:
+                inst.on_recovered = recovered
         else:
             inst = campaign(array, ap, log=log)
         inst.run()

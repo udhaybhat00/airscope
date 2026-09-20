@@ -1,34 +1,49 @@
 import re
 from types import SimpleNamespace
 
-from airscope.ui.screens.focus_v2.eviltwin_modal import (
-    EvilTwinInputModal, _plus_one, _random_bssid, _CYCLES,
-)
+from airscope.chips.driver import FakeMacSupport
+from airscope.ui.screens.focus_v2.eviltwin_modal import _plus_one, _random_bssid, _can_host, _option, _default_bssid_for
 
 _MAC = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 
-def _modal(single: bool, target) -> EvilTwinInputModal:
-    m = object.__new__(EvilTwinInputModal)   # exercise the pure knob helpers without a Textual app
-    m._single, m.target = single, target
-    return m
+def _iface(name="card", fake=FakeMacSupport.SPOOFABLE, ap_mode=True,
+           chans=(1, 6, 11), mac="aa:bb:cc:dd:ee:ff"):
+    return SimpleNamespace(name=name, mac_address=mac, supports_ap_mode=ap_mode,
+                           supported_channels=list(chans),
+                           driver=SimpleNamespace(FAKE_MAC=fake, AP_MODE=ap_mode))
 
 
-def test_single_card_locks_channel_to_target_and_bumps_bssid():
-    target = SimpleNamespace(channel=6, bssid="94:83:c4:8c:3f:78")
-    m = _modal(True, target)
-    assert m._default_channel(None) == 6
-    assert m._channel_options(None) == [("6 (target)", 6)]
-    assert m._default_bssid() == "94:83:c4:8c:3f:79"
+def test_host_gate_requires_software_ap_and_ackable_mac():
+    assert _can_host(_iface())                                    # spoofable + AP_MODE
+    assert _can_host(_iface(fake=FakeMacSupport.FIXED_MAC, mac="aa:bb:cc:dd:ee:ff"))
+    assert not _can_host(_iface(ap_mode=False))                   # no software AP
+    assert not _can_host(_iface(fake=FakeMacSupport.NONE))
+    assert not _can_host(_iface(fake=FakeMacSupport.UNIMPLEMENTED))
 
 
-def test_multi_card_keeps_decoy_channel_and_target_bssid():
-    target = SimpleNamespace(channel=1, bssid="94:83:c4:8c:3f:78")
-    m = _modal(False, target)
-    twin = SimpleNamespace(supported_channels=[1, 6, 11])
-    assert m._default_channel(twin) == 6                        # CSA decoy off ch 1
-    assert m._channel_options(twin) == [("1 (target)", 1), ("6", 6), ("11", 11)]
-    assert m._default_bssid() == "94:83:c4:8c:3f:78"
+def test_default_bssid_spoofs_target_on_spoofable_card():
+    target = SimpleNamespace(bssid="94:83:c4:8c:3f:78")
+    assert _default_bssid_for(_iface(), target) == "94:83:c4:8c:3f:78"
+
+
+def test_default_bssid_uses_hard_mac_for_fixed_mac_host():
+    target = SimpleNamespace(bssid="94:83:c4:8c:3f:78")
+    host = _iface(fake=FakeMacSupport.FIXED_MAC, mac="aa:bb:cc:dd:ee:ff")
+    assert _default_bssid_for(host, target) == "aa:bb:cc:dd:ee:ff"
+
+
+def test_default_bssid_falls_back_to_target_without_host():
+    target = SimpleNamespace(bssid="94:83:c4:8c:3f:78")
+    assert _default_bssid_for(None, target) == "94:83:c4:8c:3f:78"
+
+
+def test_option_appends_bands():
+    row = _option(_iface(chans=(1, 6, 11)))
+    assert row == "card  (2.4 GHz)"
+    row5 = _option(_iface(chans=(36, 40, 149)))
+    assert "5 GHz" in row5
+    assert _option(_iface(chans=())) == "card"
 
 
 def test_plus_one_bumps_last_nibble():
@@ -39,10 +54,3 @@ def test_plus_one_bumps_last_nibble():
 def test_random_bssid_is_locally_administered():
     b = _random_bssid()
     assert _MAC.match(b) and b.startswith("02:")
-
-
-def test_cycle_table():
-    by_label = {label: (period, once) for label, period, once in _CYCLES}
-    assert by_label["Never"] == (None, False)
-    assert by_label["Once"][1] is True
-    assert by_label["30 seconds"] == (30.0, False)

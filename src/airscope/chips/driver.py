@@ -37,6 +37,11 @@ class Driver(ABC):
     FAKE_MAC: ClassVar[FakeMacSupport] = FakeMacSupport.UNIMPLEMENTED
     """This radio's ability to auto-ACK a programmed MAC."""
 
+    AP_MODE: ClassVar[bool] = False
+    """Whether this radio can act as the EvilTwin's software AP: arm a forged
+    (spoofable) BSSID, beacon a cloned SSID/channel, and answer probe/auth/assoc.
+    Enabled only for the active-monitor chips; a kernel-side hostapd is never used."""
+
     CONFLICTING_LINUX_MODULES: ClassVar[List[str]] = []
     """Leaf kernel module(s) that bind this chipset; Linux setup blacklists them."""
 

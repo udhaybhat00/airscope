@@ -138,6 +138,7 @@ def _rx_state_line(t) -> str:
 class Rtl8822buDkmsDriver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G_NON_DFS
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, transport: Rtl8822buTransport):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

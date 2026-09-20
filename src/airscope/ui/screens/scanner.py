@@ -28,7 +28,7 @@ from airscope.crack.handshake import pmkid_crackable
 from ..capture_events import (
     CAPTURE_TOAST_TITLES, DECLOAK_METHOD_LABELS, CaptureEvent, CaptureEventDetector, CaptureKind,
 )
-from ..encryption_format import format_encryption_markup, wep_key_ascii
+from ..encryption_format import EncryptionType, format_encryption_markup, wep_key_ascii
 from ..icons import WPS_LOCKED, WPS_OPEN, signal_tier
 from airscope.wlan.channels import band_ranges
 
@@ -237,8 +237,8 @@ class ScannerView(Screen):
         ("ssid", "SSID"),
         ("channel", "CH"),
         ("encryption", "ENC"),
-        ("wps", "WPS"),
-        ("clients", "CLIENTS"),
+        ("wps", "WPS SETUP VULN"),
+        ("clients", "📱 CLIENTS"),
         ("beacons", "BEACONS"),
         ("identity", "VENDOR/ID"),
     ]
@@ -519,13 +519,18 @@ class ScannerView(Screen):
             return
         filt = self._scan_filter
         n_cli = sum(s.clients for s in self._row_states.values())
-        parts = [f"● {len(self.ap_cache)} APs · {n_cli} clients"]
+        sort_key, _ = self._COLUMNS[self._sort_idx]
+        sort_label = {
+            "signal": "signal strength", "ssid": "name", "channel": "channel",
+            "encryption": "encryption", "wps": "WPS", "clients": "client count",
+            "beacons": "beacon count", "identity": "vendor",
+        }.get(sort_key, sort_key)
+        parts = [f"● Scanning · {len(self.ap_cache)} networks found · {n_cli} devices"]
         if self._marked:
             parts.append(f"{len(self._marked)} marked")
         if filt.text or filt.encryption is not EncryptionFilter.ALL:
             parts.append(f"filter:{filt.text or '*'}/{filt.encryption.value}")
-        sort_key, _ = self._COLUMNS[self._sort_idx]
-        parts.append(f"sort:{sort_key} {'▼' if self._sort_reverse else '▲'}")
+        parts.append(f"sorted by {sort_label}")
         strip.update(" · ".join(parts))
 
     def _evict_expired_aps(self) -> None:
@@ -575,6 +580,7 @@ class ScannerView(Screen):
             cell = self._ssid_cell(ap)
             if is_stale:
                 cell.stylize("dim")
+                cell.append(" · not seen recently", style="dim")
             return cell
         if col_key == "channel":
             return Text(str(ap.channel), justify="right", style=f"{dim}{fg}")
@@ -588,14 +594,28 @@ class ScannerView(Screen):
             return Text(str(n_cli) if n_cli else "", justify="right", style=f"{dim}{fg}")
         if col_key == "encryption":
             cell = Text.from_markup(format_encryption_markup(ap, muted=fg), emoji=False, style=fg)
+            # Append plain-English encryption suffix
+            enc_type = EncryptionType.from_ap(ap)
+            _ENC_SUFFIX = {
+                EncryptionType.WPA2: " · Password protected",
+                EncryptionType.WPA1: " · Password protected",
+                EncryptionType.WEP: " · Weak encryption",
+                EncryptionType.OPEN: " · No password",
+                EncryptionType.WPA3: " · Modern security",
+                EncryptionType.WPA3_TRANSITION: " · Mixed mode",
+                EncryptionType.OWE: " · Open (enhanced)",
+            }
+            suffix = _ENC_SUFFIX.get(enc_type, "")
+            if suffix:
+                cell.append_text(Text(suffix, style="dim" if not is_stale else "dim dim"))
             if is_stale:
                 cell.stylize("dim")
             return cell
         if col_key == "wps":
             if ap.wps:
-                label = f"{WPS_LOCKED} WPS" if ap.wps_locked else f"{WPS_OPEN} WPS"
+                label = f"{WPS_LOCKED} WPS Setup Vuln" if ap.wps_locked else f"{WPS_OPEN} WPS Setup Vuln"
                 return Text(label, style=f"{dim}{fg}")
-            return Text("", style=f"{dim}{fg}")
+            return Text("—", style=f"dim {fg}")
         if col_key == "identity":
             return self._identity_cell(ap, is_stale)
         return Text("")

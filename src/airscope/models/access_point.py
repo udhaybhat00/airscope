@@ -27,6 +27,7 @@ class CaptureType(StrEnum):
     WPS_PIN = "WPS_PIN"
     WPS_PBC = "WPS_PBC"
     CRACKED = "CRACKED"
+    EVILTWIN_PSK = "EVILTWIN_PSK"
     SAE = "SAE"
 
 

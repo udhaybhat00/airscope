@@ -81,6 +81,7 @@ class Rtl8814auDkmsDriver(Driver):
     # only in the advertised set; set_channel still tunes DFS, we just don't hop it.
     SUPPORTED_CHANNELS: ClassVar[List[int]] = list(CHANNELS_2G + CHANNELS_5G_NON_DFS)
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, transport: Rtl8814auTransport):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

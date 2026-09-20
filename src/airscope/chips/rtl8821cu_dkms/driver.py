@@ -66,6 +66,7 @@ _REF_CUT = 4                    # hal chip_ver / dm cut_version
 class Rtl8821cuDkmsDriver(Driver):
     SUPPORTED_CHANNELS: ClassVar[List[int]] = CHANNELS_2G + CHANNELS_5G
     FAKE_MAC: ClassVar[FakeMacSupport] = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
 
     def __init__(self, dev: usb.core.Device):
         super().__init__()          # base owns the ACK tally (_ack_detect_on / _our_tx_macs / _ack_counts)

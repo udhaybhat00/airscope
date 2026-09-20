@@ -405,12 +405,14 @@ def save_wps_pbc(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
     return SaveResult(path=path, was_new=True)
 
 
-def save_cracked_psk(bssid: str, ssid: str | None, psk: str, tool: str) -> Optional[SaveResult]:
-    """Persist a hashcat/aircrack-recovered WPA PSK. Dedupes by PSK for this BSSID."""
+def save_cracked_psk(bssid: str, ssid: str | None, psk: str, tool: str,
+                     *, suffix: str = "_cracked.txt") -> Optional[SaveResult]:
+    """Persist a recovered WPA PSK (hashcat/aircrack, or the EvilTwin online MIC
+    check via ``save_eviltwin_psk``). Dedupes by PSK for this BSSID."""
     captures_dir = Path(Config.captures_dir)
     if not psk:
         return None
-    for p in _existing(captures_dir, bssid, "_cracked.txt"):
+    for p in _existing(captures_dir, bssid, suffix):
         try:
             text = p.read_text(encoding="utf-8", errors="replace")
         except OSError:
@@ -420,7 +422,7 @@ def save_cracked_psk(bssid: str, ssid: str | None, psk: str, tool: str) -> Optio
             return SaveResult(path=p, was_new=False)
 
     captures_dir.mkdir(parents=True, exist_ok=True)
-    path = _fresh_path(captures_dir, ssid, bssid, "_cracked.txt")
+    path = _fresh_path(captures_dir, ssid, bssid, suffix)
     body = (
         f"SSID: {ssid or ''}\n"
         f"BSSID: {bssid}\n"
@@ -429,6 +431,12 @@ def save_cracked_psk(bssid: str, ssid: str | None, psk: str, tool: str) -> Optio
     )
     path.write_text(body, encoding="utf-8")
     return SaveResult(path=path, was_new=True)
+
+
+def save_eviltwin_psk(ap: AccessPoint, psk: str) -> Optional[SaveResult]:
+    """Persist a PSK recovered live by the EvilTwin online MIC check. Dedupes by
+    PSK for this BSSID (same shape as ``save_cracked_psk``)."""
+    return save_cracked_psk(ap.bssid, ap.ssid, psk, tool="eviltwin", suffix="_eviltwin_psk.txt")
 
 
 def save_sae(ap: AccessPoint, frames: list[tuple[bytes, float]]) -> Optional[SaveResult]:

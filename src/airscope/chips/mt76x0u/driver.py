@@ -68,6 +68,7 @@ class MT76x0UDriver(Driver):
         + [149, 153, 157, 161, 165]
     )
     FAKE_MAC = FakeMacSupport.SPOOFABLE
+    AP_MODE = True
     LINUX_REPLUG_AFTER_MODPROBE = False   # self-colds: modprobe -r cold-re-enumerates the card
 
     @classmethod

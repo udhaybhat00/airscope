@@ -151,6 +151,11 @@ class WlanInterface:
         """The card's own MAC (the driver reads it during bring-up), or None before connect()."""
         return getattr(self.driver, "mac_address", None)
 
+    @property
+    def supports_ap_mode(self) -> bool:
+        """Whether the driver can host a software AP (inject 802.11 and ACK its own forged STA)."""
+        return bool(getattr(self.driver, "AP_MODE", False))
+
     def active_monitor_warning(self) -> Optional[str]:
         """Treelog warning (rich markup) if this card can't HW-ACK a spoofed MAC, else None."""
         support = self.driver.FAKE_MAC

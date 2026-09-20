@@ -16,7 +16,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, Optional
 
-from airscope.dot11.ap import auth_resp, assoc_resp, eapol_m1
+from airscope.dot11.ap import auth_resp, assoc_resp, eapol_m1, eapol_m3
 from airscope.dot11.mac import mac_to_str
 from airscope.dot11.probe import probe_resp
 
@@ -45,6 +45,8 @@ class FakeApStats:
     auth: int = 0
     assoc: int = 0
     m2: int = 0
+    m3: int = 0
+    m4: int = 0
     clients: Dict[str, ClientProgress] = field(default_factory=dict)
 
 
@@ -144,14 +146,23 @@ class FakeAP:
         self._tx(m1)
 
     def _on_m2(self, pkt, client: bytes) -> None:
-        if getattr(pkt, "msg_num", 0) != 2:
+        if getattr(pkt, "msg_num", 0) not in (2, 4):
             return
         cs = mac_to_str(client)
         rec = self.stats.clients.get(cs)
-        if rec is not None and rec.phase >= ClientPhase.GOT_M2:
-            return
-        self.stats.m2 += 1
-        self._advance(cs, ClientPhase.GOT_M2)
+        if getattr(pkt, "msg_num", 0) == 2:
+            if rec is not None and rec.phase >= ClientPhase.GOT_M2:
+                return
+            self.stats.m2 += 1
+            self._advance(cs, ClientPhase.GOT_M2)
+        else:
+            self.stats.m4 += 1
+
+    def send_m3(self, client: bytes, anonce: bytes, mic: bytes, replay: int = 1) -> None:
+        """Emit 4-way message 3 for a client whose M2 the campaign cracked (MIC comes
+        precomputed from the recovered PTK), completing our side of the exchange."""
+        self.stats.m3 += 1
+        self._tx(eapol_m3(self.bssid, client, anonce, mic, replay=replay))
 
     def _advance(self, client: str, phase: ClientPhase) -> None:
         rec = self.stats.clients.get(client)

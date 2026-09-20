@@ -39,8 +39,8 @@ async def test_hs_panel_has_crack_button_wep_panel_does_not(tmp_path):
         panels = list(view.query(_CapturePanel))
         assert len(panels) == 2
         by_title = {p.border_title: p for p in panels}
-        hs = next(p for t, p in by_title.items() if t.startswith("HANDSHAKE"))
-        wep = next(p for t, p in by_title.items() if t.startswith("WEP KEY"))
+        hs = next(p for t, p in by_title.items() if "Handshake" in t)
+        wep = next(p for t, p in by_title.items() if "WEP" in t)
         assert hs.query_one(".crack", Button) is not None
         assert not wep.query(".crack")
 
@@ -100,9 +100,9 @@ async def test_full_crack_flow_saves_psk_to_vault(tmp_path, monkeypatch):
         for _ in range(20):                                       # CapturesChanged reload
             await pilot.pause(0)
             panels = list(view.query(_CapturePanel))
-            if any(p.border_title.startswith("CRACKED PSK") for p in panels):
+            if any("Recovered" in p.border_title for p in panels):
                 break
-        assert any(p.border_title.startswith("CRACKED PSK") for p in view.query(_CapturePanel))
+        assert any("Recovered" in p.border_title for p in view.query(_CapturePanel))
         table = view.query_one("#vault-aps", DataTable)
         assert table.get_row_at(0)[2] == "1"                     # Keys column counts it
 

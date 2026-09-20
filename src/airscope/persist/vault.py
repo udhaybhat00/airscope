@@ -8,7 +8,7 @@ import sys
 import time
 import zipfile
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, List, Optional
+from typing import TYPE_CHECKING, Dict, Iterator, List, Optional
 
 from airscope.models import CaptureType, PersistedCapture
 from airscope.persist import save
@@ -43,6 +43,7 @@ class Vault:
         CaptureType.WPS_PIN: "WPS PIN",
         CaptureType.WPS_PBC: "WPS PBC",
         CaptureType.CRACKED: "Cracked PSK",
+        CaptureType.EVILTWIN_PSK: "EvilTwin PSK",
         CaptureType.SAE: "SAE",
     }
 
@@ -111,7 +112,8 @@ class Vault:
             or ap.wps_pin_psk
             or next((p.value for p in self.persisted(ap.bssid)
                       if p.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC,
-                                    CaptureType.CRACKED) and p.value), None)
+                                    CaptureType.CRACKED, CaptureType.EVILTWIN_PSK)
+                      and p.value), None)
         )
 
     def has_psk(self, ap: "AccessPoint") -> bool:
@@ -126,6 +128,17 @@ class Vault:
 
     def has_wep_key(self, ap: "AccessPoint") -> bool:
         return self._has(ap.bssid, CaptureType.WEP)
+
+    def iter_psk_items(self) -> Iterator[tuple[str, str]]:
+        """(bssid, psk) for every stored passphrase (cracked / eviltwin / PBC / PIN) across APs."""
+        seen: set[str] = set()
+        for bssid, caps in self._index.items():
+            for c in caps:
+                if (c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC,
+                               CaptureType.CRACKED, CaptureType.EVILTWIN_PSK)
+                        and c.value and c.value not in seen):
+                    seen.add(c.value)
+                    yield bssid, c.value
 
     def has_wps_psk(self, ap: "AccessPoint") -> bool:
         return any(c.type in (CaptureType.WPS_PIN, CaptureType.WPS_PBC)

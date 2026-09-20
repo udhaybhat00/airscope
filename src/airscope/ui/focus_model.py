@@ -343,6 +343,10 @@ def derive_headline(ap, array, vault) -> list[str]:
     # 3. EvilTwin campaign running.
     if isinstance(active, EvilTwinCampaign):
         camp = active
+        if getattr(camp, "password", None):
+            return [f"[black bold on green] ✓ Password found: "
+                    f"\"{escape(camp.password)}\" [/black bold on green]",
+                    "[dim]saved to the vault as an EvilTwin PSK[/dim]"]
         if camp.captured:
             return ["[black bold on green] ✓ Captured [/black bold on green] crackable M2",
                     f"[dim]saved to {Config.captures_dir}/[/dim]"]
