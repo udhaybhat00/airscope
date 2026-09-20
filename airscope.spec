@@ -75,7 +75,11 @@ a = Analysis(
     # dev/RE-only; the rest are dev tooling that has no place in a distributed build.
     # websockets.speedups is a thin-only C helper with a pure-Python fallback
     # (try/except at import): excluding it keeps macOS universal2 builds green.
-    excludes=["pyshark", "pytest", "ruff", "textual_dev", "PIL", "websockets.speedups"],
+    # jinja2/markupsafe come only via starlette.templating, which the dashboard
+    # never uses (static files + JSON): excluding dodges their thin speedups too.
+    # yaml is try/except-guarded inside uvicorn's --log-config loader (unused).
+    excludes=["pyshark", "pytest", "ruff", "textual_dev", "PIL", "websockets.speedups",
+              "jinja2", "markupsafe", "yaml"],
     noarchive=False,
 )
 pyz = PYZ(a.pure)
