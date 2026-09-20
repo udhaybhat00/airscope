@@ -7,7 +7,7 @@ from airscope.crack.external import CrackRun, CrackTools
 from airscope.models import AccessPoint
 from airscope.ui.app import AirscopeApp
 from airscope.ui.screens.vault import VaultView
-from airscope.ui.screens.vault_item import CrackModal, VaultItemView, _CapturePanel
+from airscope.ui.screens.vault_item import CrackModal, _CapturePanel
 from airscope.ui.screens import vault_item as vi
 
 _HS_LINE = "WPA*02*" + "0" * 32 + "*aabbccddeeff*112233445566*5465737431***2\n"

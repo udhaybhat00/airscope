@@ -166,7 +166,7 @@ class VaultView(Screen):
         steps = exports.steps_from_jsonl(session) if session else []
         outdir = Path(Config.captures_dir).parent / "exports"
         try:
-            made = exports.export_all(outdir, aps, cracks, steps, keys)
+            exports.export_all(outdir, aps, cracks, steps, keys)
         except OSError as exc:
             self.notify(f"Export failed: {exc}", severity="error")
             return

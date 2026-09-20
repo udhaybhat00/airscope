@@ -1,7 +1,7 @@
 """Batch planner + runner (campaigns.batch) with fakes: no radio, no UI."""
 import pytest
 
-from airscope.campaigns.batch import BatchRunner, BatchStep, build_plan
+from airscope.campaigns.batch import BatchRunner, build_plan
 from airscope.models import AccessPoint
 
 

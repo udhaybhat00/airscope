@@ -286,7 +286,6 @@ class HeadlessContext:
     async def start_attack(self, kind: str, bssid: str, timeout: Optional[float] = None,
                            punt: bool = True) -> dict:
         """Start one attack; raises _Busy (radio taken), _NoTarget, _Blocked."""
-        from airscope.campaigns.batch import STEP_TIMEOUTS
         if kind not in ("wps", "pmkid", "handshake", "sae", "eviltwin"):
             raise _Blocked(f"unknown attack: {kind}")
         if self.attack is not None:
@@ -326,7 +325,7 @@ class HeadlessContext:
 
     async def _start_real_attack(self, kind: str, ap, timeout: Optional[float],
                                  punt: bool) -> dict:
-        from airscope.campaigns.batch import BatchRunner, BatchStep, STEP_TIMEOUTS
+        from airscope.campaigns.batch import BatchRunner, STEP_TIMEOUTS
         if kind == "eviltwin":
             return await self._start_eviltwin(ap, punt)
         if kind not in ("wps", "pmkid", "handshake", "sae"):
@@ -530,8 +529,6 @@ class HeadlessContext:
     async def start_crack(self, path: str, wordlist: str) -> dict:
         """Launch a dictionary crack on one vault capture; demo simulates it."""
         from pathlib import Path as _Path
-        from airscope.crack import external as crack_ext
-        from airscope.persist.common import bssid_to_dashed
         cap = next((c for c in self.vault.all_captures() if c.path == path), None)
         if cap is None:
             raise _NoTarget(path)
@@ -546,9 +543,6 @@ class HeadlessContext:
         return _public_crack(job)
 
     async def _watch_crack(self, job: dict, cap, wordlist: str) -> None:
-        from pathlib import Path as _Path
-        from airscope.crack import external as crack_ext
-        from airscope.persist.common import bssid_to_dashed
         try:
             if self.demo:
                 psk = await self._demo_crack(job)

@@ -13,9 +13,8 @@ import json
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from typing import Dict, Optional
 
-from airscope.campaigns.campaign import Campaign
 from airscope.campaigns.deauth import DeauthCampaign
 from airscope.campaigns.pin import WpsCampaign
 from airscope.campaigns.pmkid import PmkidHarvestAttack

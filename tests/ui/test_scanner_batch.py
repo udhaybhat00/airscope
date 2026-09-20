@@ -1,5 +1,4 @@
 """Scanner batch queue: Space marks rows, B attacks the marked set."""
-from typing import List, Optional
 
 import pytest
 from textual.app import App
