@@ -1,0 +1,56 @@
+"""Hashcat ``-m 22000`` hashline FORMAT (WPA-PBKDF2-PMKID+EAPOL).
+
+The disk writer is ``persist.save`` (``HcFiles``).
+
+The PMKID (``WPA*01``) line is built here; the EAPOL (``WPA*02``) lines and the
+crackability decision both live in ``crack.handshake``, the single source
+of truth, so a "captured" verdict and a writable hashline can never disagree.
+
+Format spec (one line per hash):
+
+    PROTOCOL*TYPE*PMKID_OR_MIC*MACAP*MACSTA*ESSID*ANONCE*EAPOL*MESSAGEPAIR
+
+References:
+  - Format (WPA*01 / WPA*02 fields), hashcat issue #1816:
+    https://github.com/hashcat/hashcat/issues/1816
+  - The cracker, module_22000.c, derives the EAPOL MIC algorithm from the Key
+    Descriptor Version carried in the embedded EAPOL bytes (keyver 2 = HMAC-SHA1 /
+    AKM PSK, keyver 3 = AES-CMAC / AKM PSK-SHA256), so the negotiated AKM needs no
+    field of its own. The PMKID (WPA*01) path is single-algorithm (HMAC-SHA1) and
+    carries no AKM at all:
+    https://github.com/hashcat/hashcat/blob/master/src/modules/module_22000.c
+  - hashcat WPA/WPA2 wiki: https://hashcat.net/wiki/doku.php?id=cracking_wpawpa2
+"""
+from __future__ import annotations
+
+from typing import List, Optional
+
+from airscope.models import Handshake
+from airscope.crack import handshake as wpa
+from airscope.crack.handshake import mac_compact, ssid_hex
+
+
+def pmkid_hashline(ssid: str, hs: Handshake) -> Optional[str]:
+    """Return a ``WPA*01*…`` line for the PMKID, or None if not available or not
+    crackable."""
+    if not ssid or not hs.pmkid or len(hs.pmkid) != 16:
+        return None
+    if not wpa.pmkid_crackable(hs):
+        return None
+    return (
+        "WPA*01"
+        f"*{hs.pmkid.hex()}"
+        f"*{mac_compact(hs.bssid)}"
+        f"*{mac_compact(hs.client_mac)}"
+        f"*{ssid_hex(ssid)}"
+        "***"
+    )
+
+
+def eapol_hashlines(ssid: str, hs: Handshake) -> List[str]:
+    """One ``WPA*02*…`` line per distinct *crackable* handshake instance. Empty
+    when the SSID is hidden or no instance is serialisable (e.g. a clipped MIC
+    frame), i.e. exactly when there's nothing hashcat could crack."""
+    if not ssid:
+        return []
+    return [wpa.hc22000_line(ssid, hs, pair) for pair in wpa.crackable_pairs(hs)]

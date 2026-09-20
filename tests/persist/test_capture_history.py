@@ -1,0 +1,200 @@
+"""Tests for the captures/ history loader (synthetic files, no real IDs)."""
+from __future__ import annotations
+
+from airscope.models import CaptureType
+from airscope.persist.capture_history import load_capture_index, summarize
+from airscope.persist.config import Config
+
+_BSSID_DASH = "aa-bb-cc-dd-ee-ff"
+_BSSID_COLON = "aa:bb:cc:dd:ee:ff"
+
+
+# Minimal hashlines: only the WPA*TYPE* prefix is inspected.
+_HS_LINE = "WPA*02*" + "0" * 32 + "*aabbccddeeff*112233445566*5465737431***2\n"
+_PMKID_LINE = "WPA*01*" + "0" * 32 + "*aabbccddeeff*112233445566*5465737431***\n"
+_WEPKEY_TXT = (
+    "SSID:  TestNet\n"
+    f"BSSID: {_BSSID_COLON}\n"
+    "WEP key (hex):   6162636465\n"
+    'WEP key (ASCII): "abcde"\n'
+)
+_WPS_PBC_TXT = (
+    "SSID: TestNet\n"
+    f"BSSID: {_BSSID_COLON}\n"
+    "PSK: yxws3tik\n"
+)
+_WPS_PIN_TXT = (
+    "SSID: TestNet\n"
+    f"BSSID: {_BSSID_COLON}\n"
+    "PSK: abcdefgh\n"
+    "PIN: 12345670\n"
+)
+
+
+def _write(d, name, content):
+    (d / name).write_text(content, encoding="utf-8")
+
+
+class TestLoadCaptureIndex:
+    def test_handshake_hc22000(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        idx = load_capture_index()
+        assert _BSSID_COLON in idx
+        caps = idx[_BSSID_COLON]
+        assert len(caps) == 1 and caps[0].type == "HS"
+        assert caps[0].timestamp == 1700000000
+
+    def test_pmkid_hc22000(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000001_pmkid.hc22000", _PMKID_LINE)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert [c.type for c in caps] == ["PMKID"]
+
+    def test_handshake_and_pmkid_as_separate_files(self, tmp_path):
+        # Post-refactor, each type is its own file (no more mixed .hc22000).
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000002_handshake.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000003_pmkid.hc22000", _PMKID_LINE)
+        types = {c.type for c in load_capture_index()[_BSSID_COLON]}
+        assert types == {"HS", "PMKID"}
+
+    def test_wep_key_txt(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000004_wep_key.txt", _WEPKEY_TXT)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == "WEP" and caps[0].value == "6162636465"
+
+    def test_wps_pbc_txt(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000005_wps_pbc.txt", _WPS_PBC_TXT)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == CaptureType.WPS_PBC and caps[0].value == "yxws3tik"
+
+    def test_wps_pin_txt(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000006_wps_pin.txt", _WPS_PIN_TXT)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == CaptureType.WPS_PIN and caps[0].value == "abcdefgh"
+        assert caps[0].pin == "12345670"
+
+    def test_cracked_txt(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000008_cracked.txt",
+               "SSID: TestNet\nBSSID: aa:bb:cc:dd:ee:ff\nPSK: secret123\nTool: hashcat\n")
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == CaptureType.CRACKED and caps[0].value == "secret123"
+
+    def test_sae_pcap_counts_pairs(self, tmp_path):
+        import struct
+        from airscope.persist.pcap import write_pcap
+
+        def _auth(dest, src, seq):
+            f = (bytes([0xB0, 0x00]) + b"\x00\x00"
+                 + bytes.fromhex(dest.replace(":", "")) + bytes.fromhex(src.replace(":", ""))
+                 + bytes.fromhex(_BSSID_DASH.replace("-", "")) + b"\x00\x00")
+            return f + struct.pack("<HHH", 3, seq, 0) + bytes(64)
+
+        sta = "11:22:33:44:55:66"
+        frames = [(_auth(_BSSID_COLON, sta, 1), 1700000009.0),
+                  (_auth(sta, _BSSID_COLON, 2), 1700000010.0),
+                  (_auth(_BSSID_COLON, sta, 1), 1700000011.0)]   # lone commit: no pair
+        write_pcap(tmp_path / f"TestNet_{_BSSID_DASH}_1700000009_sae.pcap", frames)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1
+        assert caps[0].type == CaptureType.SAE and caps[0].record_count == 1
+
+    def test_handshake_pcap_is_indexed(self, tmp_path):
+        # .pcap files are first-class now (a handshake may exist only as a .pcap).
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000007_handshake.pcap", "binary-ish")
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1 and caps[0].type == CaptureType.HS
+
+    def test_handshake_hc22000_and_pcap_both_indexed(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000021_handshake.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000021_handshake.pcap", "binary-ish")
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 2 and {c.type for c in caps} == {CaptureType.HS}
+
+    def test_bssid_populated_on_captures(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        assert load_capture_index()[_BSSID_COLON][0].bssid == _BSSID_COLON
+
+    def test_aggregate_counts_hashline_records(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}.hc22000", _HS_LINE + _PMKID_LINE + _PMKID_LINE)
+        by_type = {c.type: c for c in load_capture_index()[_BSSID_COLON]}
+        assert by_type[CaptureType.HS].record_count == 1
+        assert by_type[CaptureType.PMKID].record_count == 2
+
+    def test_pcap_record_count_is_zero(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000030_handshake.pcap", "binary-ish")
+        assert load_capture_index()[_BSSID_COLON][0].record_count == 0
+
+    def test_ssid_with_underscores_parses(self, tmp_path):
+        _write(tmp_path, f"Beach_2_4_{_BSSID_DASH}_1700000008_handshake.hc22000", _HS_LINE)
+        assert _BSSID_COLON in load_capture_index()
+
+    def test_ssid_recovered_from_filename(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        assert load_capture_index()[_BSSID_COLON][0].ssid == "TestNet"
+
+    def test_ssid_with_underscores_recovered_whole(self, tmp_path):
+        _write(tmp_path, f"Beach_2_4_{_BSSID_DASH}_1700000008_handshake.hc22000", _HS_LINE)
+        assert load_capture_index()[_BSSID_COLON][0].ssid == "Beach_2_4"
+
+    def test_unrecognized_name_ignored(self, tmp_path):
+        _write(tmp_path, "cracks.txt", "somekey\n")
+        assert load_capture_index() == {}
+
+    def test_legacy_unsuffixed_name_ignored(self, tmp_path):
+        # Old-format file (no _<kind> suffix) shouldn't accidentally parse.
+        # The migration script converts these; the reader doesn't bridge.
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000009.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000010_wepkey.txt", _WEPKEY_TXT)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000011.wps", _WPS_PBC_TXT)
+        assert load_capture_index() == {}
+
+    def test_missing_dir_is_empty(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Config, "captures_dir", str(tmp_path / "nope"))
+        assert load_capture_index() == {}
+
+    def test_sorted_newest_first(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700009999_pmkid.hc22000", _PMKID_LINE)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert [c.timestamp for c in caps] == [1700009999, 1700000000]
+
+    def test_aggregated_hc22000_both_hs_and_pmkid(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}.hc22000", _HS_LINE + _PMKID_LINE)
+        caps = load_capture_index()[_BSSID_COLON]
+        types = {c.type for c in caps}
+        assert types == {"HS", "PMKID"}
+
+    def test_aggregated_hc22000_hs_only(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}.hc22000", _HS_LINE)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1 and caps[0].type == "HS"
+
+    def test_aggregated_hc22000_pmkid_only(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}.hc22000", _PMKID_LINE)
+        caps = load_capture_index()[_BSSID_COLON]
+        assert len(caps) == 1 and caps[0].type == "PMKID"
+
+
+class TestSummarize:
+    def test_totals(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000001_pmkid.hc22000", _PMKID_LINE)
+        _write(tmp_path, "Other_11-22-33-44-55-66_1700000002_wep_key.txt", _WEPKEY_TXT)
+        _write(tmp_path, "Pbc_22-33-44-55-66-77_1700000003_wps_pbc.txt", "PSK: hunter2\n")
+        hs, pmkid, wep, wps, cracked = summarize(load_capture_index())
+        assert (hs, pmkid, wep, wps, cracked) == (1, 1, 1, 1, 0)
+
+    def test_deduped_per_ap(self, tmp_path):
+        # Two handshakes for ONE ap -> counts as one handshake, not two.
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700000000_handshake.hc22000", _HS_LINE)
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}_1700009999_handshake.hc22000", _HS_LINE)
+        assert summarize(load_capture_index()) == (1, 0, 0, 0, 0)
+
+    def test_aggregated_hc22000_summarizes_both_hs_and_pmkid(self, tmp_path):
+        _write(tmp_path, f"TestNet_{_BSSID_DASH}.hc22000", _HS_LINE + _PMKID_LINE)
+        hs, pmkid, wep, wps, cracked = summarize(load_capture_index())
+        assert (hs, pmkid, wep, wps, cracked) == (1, 1, 0, 0, 0)
+

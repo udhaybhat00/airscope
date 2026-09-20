@@ -1,0 +1,1282 @@
+"""``FocusViewV2``: the spatial "router-admin" Focus redesign (landscape v1).
+
+Layout (top to bottom):
+- **Top bar** (fixed height): an "action area" on the left (the back button +
+  the encryption-conditional attack buttons, all the clickables in one place)
+  then the status line, expanding to fill and stay centered.
+- **Mid band**: card | packet-dashboard | router. Card and router are fixed-width
+  (the art is 20 cells) and vertically centered; the dashboard fills the
+  middle. The band's height is capped so the sparklines reach full 2-row height
+  and the endpoint columns fit, then extra terminal height goes to the bottom.
+- **Bottom band**: LOG (fluid width) | CLIENTS (fixed width). Grows once the mid
+  band is satisfied, so tall terminals show more log lines + clients.
+
+Power + signal live above the router ESSID (the live rainbow signal bar), not in
+the top bar. Portrait is deferred.
+"""
+from __future__ import annotations
+
+import asyncio
+import logging
+import re
+import time
+from collections import deque
+from datetime import datetime
+from typing import TYPE_CHECKING, Optional, Set
+
+from rich.markup import escape
+from rich.text import Text
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal
+from textual.screen import Screen
+from textual.widgets import Button, Footer, Header, Static
+
+from airscope.campaigns import treelog
+from airscope.campaigns.campaign import Campaign
+from airscope.campaigns.pmkid import PmkidHarvestAttack
+from airscope.campaigns.wep import WepCampaign
+from airscope.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
+from airscope.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal
+from airscope.campaigns.pin import WpsCampaign, load_run_state, run_progress_line
+from airscope.campaigns.deauth import DeauthCampaign
+from airscope.campaigns.sae import SaeCampaign
+from airscope.campaigns.pbc import WpsPbcCapture
+from airscope.campaigns.probe import probe_ap
+from .campaign_controls import CampaignControls
+from airscope.campaigns.wps.registrar import PinResult
+from airscope.crack.handshake import handshake_uncrackable_label
+from airscope.models import AccessPoint, IdSource
+from airscope.persist.config import Config
+
+from ... import focus_model as fm
+from ...capture_events import (
+    CAPTURE_TOAST_TITLES, DECLOAK_METHOD_LABELS, CaptureEvent, CaptureEventDetector, CaptureKind,
+)
+from ...capture_log import short_sta
+from ...eapol_aggregate import EapolAggregator
+from ... import pmkid_log
+from ...encryption_format import wep_key_ascii
+from .card_endpoint import CardEndpoint
+from .tx_picker import TxDevicePicker
+from .clients_list import ClientsList, ClientWidget, FingerprintModal
+from .packet_dashboard import PacketDashboard
+from .log_band import LogBand
+from .router_endpoint import RouterEndpoint
+from . import art
+
+if TYPE_CHECKING:
+    from airscope.ui.app import AirscopeApp
+
+logger = logging.getLogger(__name__)
+
+_ENDPOINT_W = 20  # the .ans art is exactly 20 cells wide
+_TOPBAR_H = 3
+_CHROME_H = 2  # Buffer for Textual's Header & Footer (1 row each)
+_BORDER = "$primary"  # Border/title color for  LOG / CLIENTS panels
+
+# Mid-band height
+_CENTER_MAX = 13
+_CENTER_MIN = 7
+_BOTTOM_MIN = 6
+# Horizontal padding on the mid row
+_PAD_START = 80
+_PAD_RATE = 0.4
+
+_PBC_RETRY_COOLDOWN_S = 3.0
+
+_ATTACK_BUTTONS = [
+    ("btn-gen-ivs", "ARP Replay"), ("btn-chop", "ChopChop"), ("btn-deauth", "AutoDeauth"),
+    ("btn-pmkid", "PMKID"), ("btn-wps-pin", "WPS PIN"), ("btn-eviltwin", "EvilTwin"),
+    ("btn-sae", "SAE"), ("btn-stop-pbc", "Stop PBC"),
+]
+
+# Static button tooltips, keyed by live label so toggled buttons get idle/run-specific tips.
+_BUTTON_TIPS = {
+    "ARP Replay": "Listen for & replay ARP packets",
+    "Stop Replay": "Stop the entire WEP campaign.",
+    "ChopChop": "Forge a replayable packet",
+    "Stop Chop": "Interrupt chopping and return to ARP replay",
+    "AutoDeauth": "De-authenticate clients 1-by-1, then de-authenticates broadcast. Loops.",
+    "PMKID": "Associate to extract PMKID\n(some APs not applicable)",
+    "WPS PIN": "PIN attacks: PixieDust, default vendor PINs, then brute-force",
+    "EvilTwin": "Punt clients onto a WPA2 twin to capture a crackable handshake",
+    "Stop EvilTwin": "Tear down the twin and return clients to the AP",
+    "SAE": "Passively capture WPA3 Dragonfly commit+confirm (PMF-proof)",
+    "Stop SAE": "Stop listening and save captured pairs",
+}
+
+
+# Pretty-print a capture filename, skipping the <bssid>_<epoch> middle
+_FILENAME_MIDDLE = re.compile(r"_[0-9a-fA-F]{2}(?:-[0-9a-fA-F]{2}){5}_\d+_")
+
+
+def _save_line(result) -> str:
+    """Short, dim 'saved/exists: captures/<essid>_…_<kind>.<ext>' line for a save result."""
+    verb = "saved" if result.was_new else "exists"
+    name = result.path.name
+    m = _FILENAME_MIDDLE.search(name)
+    short = f"{name[:m.start()]}_…_{name[m.end():]}" if m else name
+    return f"[dim]{verb}: {Config.captures_dir}/{escape(short)}[/dim]"
+
+
+def _wep_key_chip(key_hex) -> str:
+    """Black-bold-on-cyan WEP key chip (bare hex for non-printable keys)."""
+    if not key_hex:
+        return "[dim]?[/dim]"
+    return f"[black bold on cyan] {wep_key_ascii(key_hex)} [/black bold on cyan]"
+
+
+class FocusViewV2(Screen):
+    app: "AirscopeApp"
+
+    HORIZONTAL_BREAKPOINTS = [(0, "-compact"), (100, "-normal"), (140, "-wide")]
+
+    # Attack hotkeys come from the campaign registry
+    BINDINGS = [
+        Binding("escape", "go_back", "Back", show=True),
+        Binding("d", "deauth_all", "Deauth", show=True),
+        *[Binding(cls.hotkey[0], f"campaign('{cls.key}')", cls.hotkey[1], show=True)
+          for cls in fm.BUTTON_CAMPAIGNS if cls.hotkey],
+        Binding("c", "campaign('chop')", "ChopChop", show=True),
+        Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
+        Binding("s", "silence", "Silence", show=True),
+        Binding("s", "unsilence", "unSilence", show=True),
+        Binding("q", "app.quit", "Quit", show=True),
+    ]
+
+    _DEAUTH_SEL_ROUNDS = 10
+    _DEAUTH_BCAST_COUNT = 20
+
+    CSS = """
+    FocusViewV2 { layout: vertical; background: $surface; }
+
+    #topbar { height: %(top)d; }
+    #actions { width: auto; height: 100%%; }
+    #topbar Button { height: 3; width: auto; min-width: 0; margin: 0 1 0 0; }
+    /* Idle attacks are ghost outlines; running (magenta) marks the live one. */
+    #topbar .attack-btn { background: transparent; border: round $primary; color: $foreground; }
+    #topbar .attack-btn:hover { background: $primary 18%%; }
+    #topbar .attack-btn:disabled { border: round $surface; color: $text-muted; }
+    #topbar .attack-btn.running {
+        background: #c792ea; border: round #c792ea; color: #0a0e14; text-style: bold;
+    }
+    #status { width: 1fr; height: 3; content-align: center middle; text-align: center; }
+    #rspacer { width: 0; height: 1; }
+
+    #mid { height: 1fr; }
+    #card, #router { width: %(ew)d; align: center middle; }
+    /* Router art is a row shorter than the card's, so bottom-align it. */
+    #router { align: center bottom; }
+    #dashboard { width: 1fr; height: 100%%; padding: 0 1; }
+    .endpoint-art { width: %(ew)d; background: transparent; }
+    .card-static, .ap-static { width: 100%%; height: 1; text-align: center; color: $text-muted; }
+    .card-dynamic { width: 100%%; height: 1; text-align: center; color: $accent; }
+    .ap-essid { width: 100%%; height: 1; text-align: center; text-style: bold; }
+    .ap-power { width: 100%%; height: 1; text-align: center; }
+    #ap-identity-row { width: 100%%; height: 1; align-horizontal: center; }
+    #ap-identity {
+        width: 1fr; height: 1; min-width: 0; border: none; margin: 0; padding: 0;
+        background: transparent; color: $text-muted; content-align: center middle;
+    }
+    #ap-identity.identity-known { text-style: underline; color: $secondary; }
+    #ap-identity:focus { text-style: bold reverse; }
+    #ap-probe {
+        width: 4; height: 1; min-width: 0; border: none; margin: 0; padding: 0;
+        background: transparent;
+    }
+    #ap-probe:hover { background: $surface-lighten-1; }
+    #ap-probe:focus { text-style: bold reverse; }
+
+    #bottom { height: 1fr; }
+    #log { width: 1fr; height: 100%%; border: round %(border)s;
+           border-title-color: %(border)s; border-title-style: bold; padding: 0 1; }
+    #log-rich { width: 100%%; height: 1fr; background: transparent; border: none; padding: 0; }
+    #clients { width: 40; height: 100%%; border: round %(border)s;
+               border-title-color: %(border)s; border-title-style: bold; padding: 0 1; }
+    /* Rows scroll inside a fixed-height region; the broadcast button stays pinned. */
+    #client-rows { width: 100%%; height: 1fr; }
+
+    .bcast-btn { width: 100%%; height: 1; min-width: 0; border: none; margin: 0 0 1 0;
+                 background: $error; color: $text; content-align: center middle; }
+    .client-row { height: 1; width: 100%%; }
+    .cl-fp { width: 2; }
+    /* A known fingerprint is clickable (pops up the detail popup): underline + accent color on
+       the MAC marks it, same as any other actionable text. Not on the emoji itself -- the
+       underline renders through the glyph rather than under it, which reads as broken/ugly. */
+    .cl-bssid.fp-known { text-style: underline; color: $secondary; }
+    .cl-bssid { width: 17; }
+    .cl-pwr { width: 5; text-align: right; }
+    .cl-pkts { width: 6; text-align: right; }
+    .cl-deauth { width: 3; min-width: 3; height: 1; border: none; margin: 0 0 0 1;
+                 background: red; color: white; content-align: center middle; }
+    """ % {"ew": _ENDPOINT_W, "top": _TOPBAR_H, "border": _BORDER}
+
+    def __init__(self, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self._target_ap = None
+        self._last_status: list[str] | None = None   # last-pushed headline; skip no-op repaints
+        self._beacon_samples: deque = deque()
+        self._events = CaptureEventDetector(granular_eapol=True)
+        self._eapol_agg = EapolAggregator(settle_s=3.0)
+        self._tick_timer = None
+        # The one running campaign (Campaign.active is the radio mutex).
+        self._controls = CampaignControls()
+        self._pbc_user_stopped = False
+        self._pbc_retry_after = 0.0   # monotonic time before which we won't re-arm a PBC retry
+        self._probe_task: Optional[asyncio.Task] = None
+        self._prev_stats = None
+        self._campaign_toggles = {
+            "wep": self._toggle_generate_ivs, "pmkid": self._toggle_pmkid,
+            "wps": self._toggle_wps_pin, "chop": self._toggle_chop,
+            "deauth": self._toggle_deauth, "sae": self._toggle_sae,
+        }
+        self._binding_sig: Optional[tuple] = None
+        self._rspacer_w = -1                          # last-set spacer width; skip no-op relayouts
+
+    # ----- compose -----------------------------------------------------------
+
+    def compose(self) -> ComposeResult:
+        yield Header()
+        with Horizontal(id="topbar"):
+            with Horizontal(id="actions"):
+                yield Button("‹ Scanner", id="back")
+                # The full attack set is composed once (hidden); refresh_buttons shows the ones that fit the target.
+                for bid, label in _ATTACK_BUTTONS:
+                    btn = Button(label, id=bid, classes="attack-btn")
+                    btn.display = False
+                    yield btn
+            status = self._status()
+            self._last_status = status
+            yield Static(self._render_status(status), id="status")
+            # Right spacer to accurately align status to sparklines.
+            yield Static("", id="rspacer")
+        with Horizontal(id="mid") as mid:
+            mid.ALLOW_SELECT = False
+            yield CardEndpoint(**self._card_values(), id="card")
+            yield PacketDashboard(self._dashboard_rows(), id="dashboard")
+            yield RouterEndpoint(**self._router_values(), id="router")
+        with Horizontal(id="bottom"):
+            yield LogBand([], id="log")
+            yield ClientsList(self._client_list(), id="clients")
+        yield Footer()
+
+    async def on_mount(self) -> None:
+        self._tick_timer = self.set_interval(1 / 10, self._tick)
+        self._distribute()
+        await self._enter_target()
+
+    async def on_screen_resume(self) -> None:
+        # Full re-acquire only on a target change; a same-target return keeps the live view.
+        target = getattr(self.app, "target_ap", None)
+        if target is not self._target_ap:
+            await self._enter_target()
+        elif target is not None:
+            # Re-pin the pool to the target's channel on re-entry (STACK across channel-capable cards).
+            array = self.app.array
+            if array is not None:
+                ok = await array.set_channel(target.channel, scan=False)
+                logger.info("[FOCUS] re-pin: bssid=%s ch=%s -> %s",
+                            target.bssid, target.channel, ok)
+
+    def on_resize(self) -> None:
+        self._distribute()
+
+    # ----- snapshot building -------------------------------------------------
+
+    def _pbc_busy(self) -> bool:
+        cur = self._controls.current
+        return isinstance(cur, WpsPbcCapture) and not cur.done
+
+    def _is_probing(self) -> bool:
+        return self._probe_task is not None and not self._probe_task.done()
+
+    def _any_campaign_active(self) -> bool:
+        return Campaign.active is not None or self._controls.current is not None
+
+    def _stop_probe(self) -> None:
+        if self._probe_task is not None and not self._probe_task.done():
+            self._probe_task.cancel()
+        self._probe_task = None
+
+    def _router_values(self) -> dict:
+        """The AP identity + power primitives the router endpoint renders, read live from
+        the target (blanks when there's no target). ``beacon_rate`` mutates the beacon
+        deque, so this is its single caller per tick."""
+        ap = self.app.target_ap
+        if ap is None:
+            return dict(essid="", bssid="", channel=0, power_dbm=-100, signal=None,
+                        wps=False, has_m1=False, probing=False, probe_disabled=False,
+                        identity="", identity_details=None)
+        essid = fm.truncate_ssid(ap.ssid) if ap.ssid else "‹hidden›"
+        rate, _ = fm.beacon_rate(ap, self._beacon_samples, time.time())
+        return dict(essid=essid, bssid=ap.bssid, channel=ap.channel,
+                    power_dbm=ap.signal, signal=rate,
+                    wps=bool(ap.wps),
+                    has_m1=ap.identity.has_source(IdSource.WSC_M1),
+                    probing=self._is_probing(),
+                    probe_disabled=self._any_campaign_active(),
+                    identity=ap.identity.summary,
+                    identity_details=fm.router_identity_details(ap))
+
+    def _card_values(self) -> dict:
+        """The card endpoint's compose seed: chipset + own MAC from the live pool, plus the
+        current dynamic line. Identity then tracks the pool live via ``_sync_card``."""
+        chipset, bssid = fm.card_identity(self.app.array)
+        return dict(chipset=chipset, bssid=bssid, dynamic=fm.card_dynamic())
+
+    def _status(self) -> list[str]:
+        """The headline lines for the live target (empty when there's no target)."""
+        ap = self.app.target_ap
+        if ap is None:
+            return []
+        return fm.derive_headline(ap, self.app.array, self.app.vault)
+
+    def _dashboard_rows(self) -> list:
+        """The packet-dashboard row set for the live target's encryption family (empty when
+        there's no target). The widget samples the live counters itself."""
+        ap = self.app.target_ap
+        return fm.dashboard_rows(ap) if ap is not None else []
+
+    def _client_list(self) -> list:
+        """The live target's clients. Forged/own MACs are already excluded by the sink;
+        other APs' clients are filtered here by BSSID. Empty when there's no target."""
+        ap = self.app.target_ap
+        array = self.app.array
+        if ap is None or array is None:
+            return []
+        return [c for c in array.clients.values() if c.bssid == ap.bssid]
+
+    @staticmethod
+    def _render_status(status) -> Text:
+        return Text("\n").join(Text.from_markup(s, emoji=False) for s in status)
+
+    def _sync_card(self) -> None:
+        """Refresh the card endpoint (picker + art) from the live pool, polled because WlanArray has
+        no arrival callback. The shown card is the TX card: the campaign's locked one, else
+        select_iface's pick for this target."""
+        array = self.app.array
+        members = array.members if array else []
+        active = Campaign.active
+        ap = getattr(self.app, "target_ap", None)
+        if active is not None:
+            primary = active.iface
+        elif ap is not None and array is not None:
+            primary = array.select_iface(ap.channel)
+        else:
+            primary = None
+        primary = primary or art.pick_primary(members)   # no capable card: still show something
+        card = self.query_one("#card", CardEndpoint)
+        card.set_art(art.art_path_for(primary) if primary is not None else art.pool_art(members))
+        card.sync_picker(members, ap.channel if ap is not None else None,
+                         primary, active is not None)
+        card.update_bssid(members[0].mac_address if len(members) == 1 else None)
+
+    def on_tx_device_picker_selected(self, event: TxDevicePicker.Selected) -> None:
+        """User pinned a TX card in the picker: record the preference and sync the endpoint."""
+        if self.app.array is not None:
+            self.app.array.prefer(event.iface)
+        self._sync_card()
+
+    def refresh_buttons(self) -> None:
+        """Set each attack button straight from its campaign class + the active campaign.
+        No ButtonState in between: read the campaign, write the widget."""
+        ap = getattr(self.app, "target_ap", None)
+        if ap is None:
+            return
+        active = Campaign.active
+        probing = self._is_probing()
+        for cls in fm.BUTTON_CAMPAIGNS:
+            btn = self.query_one(f"#{cls.button_id}", Button)
+            btn.display = cls.visible(ap)
+            running = active is not None and active.key == cls.key and cls.stoppable
+            if running:
+                btn.label, btn.variant, btn.disabled, reason = cls.run_label, cls.run_variant, False, ""
+                btn.add_class("running")
+            else:
+                reason = fm.campaign_blocked(cls, ap)
+                btn.label, btn.variant = cls.idle_label, cls.idle_variant
+                btn.disabled = reason is not None
+                btn.remove_class("running")
+            if probing and not running:
+                btn.disabled, reason = True, "Disabled while probing"
+            btn.tooltip = reason or _BUTTON_TIPS.get(str(btn.label))
+        self._refresh_chop_button(ap, active, probing)
+        self._refresh_stop_pbc_button(probing)
+
+    def _refresh_chop_button(self, ap, active, probing: bool) -> None:
+        """ChopChop: a WEP sub-action, enabled only while the WEP campaign runs."""
+        btn = self.query_one("#btn-chop", Button)
+        wep_running = isinstance(active, WepCampaign)
+        chopping = wep_running and getattr(active, "chop_active", False)
+        btn.display = WepCampaign.visible(ap)
+        btn.disabled = not wep_running or Config.is_silenced(ap.bssid) or probing
+        btn.label = "Stop Chop" if chopping else "ChopChop"
+        btn.variant = "warning" if chopping else "primary"
+        btn.set_class(chopping, "running")
+        btn.tooltip = _BUTTON_TIPS.get(str(btn.label))
+
+    def _refresh_stop_pbc_button(self, probing: bool) -> None:
+        """The transient 'Stop PBC' button (PBC has no start button; it auto-invades)."""
+        stop_pbc = self.query_one("#btn-stop-pbc", Button)
+        if self._pbc_busy():
+            stopping = getattr(self._controls.current, "stopped", False)
+            stop_pbc.display = True
+            stop_pbc.disabled = stopping or probing         # already draining → no double-stop
+            stop_pbc.variant = "error"
+            stop_pbc.label = "Stopping…" if stopping else "Stop PBC"
+        else:
+            stop_pbc.display = False
+
+    # ----- target (re)acquisition --------------------------------------------
+
+    async def _enter_target(self) -> None:
+        """Bind to ``app.target_ap``: stop campaigns, reset state, update panels/radio/log."""
+        self._controls.stop()
+        self._stop_probe()
+
+        ap = getattr(self.app, "target_ap", None)
+        self._target_ap = ap
+        if ap is None:
+            return
+        self.sub_title = f"{ap.ssid or '<hidden>'} · {ap.bssid} · CH{ap.channel}"
+        array = self.app.array
+        logger.info("[FOCUS] enter: ssid=%r bssid=%s ch=%s", ap.ssid, ap.bssid, ap.channel)
+
+        self._beacon_samples.clear()
+        self._events.reset()
+        self._eapol_agg.reset()
+        self._prev_stats = None        # drop the old target's counters
+        self.query_one("#log", LogBand).clear()
+
+        status = self._status()
+        self._last_status = status
+        self.query_one("#status", Static).update(self._render_status(status))
+        self.query_one("#dashboard", PacketDashboard).reconfigure(self._dashboard_rows(), array, ap.bssid)
+        self.query_one("#card", CardEndpoint).update(dynamic=fm.card_dynamic())
+        self._sync_card()
+        self.query_one("#router", RouterEndpoint).update(**self._router_values())
+        self.query_one("#clients", ClientsList).sync(self._client_list())
+        self.refresh_buttons()
+        self._balance_status()
+        self._refresh_status_footer()  # dashboard footer (cleared by reconfigure)
+
+        # Log initial "target acquired"
+        enc = fm.encryption_chip(ap)
+        if ap.ssid:
+            chip = f"[black bold on cyan] {escape(ap.ssid)} [/black bold on cyan]"
+            self._log(f"[bold]Target acquired:[/bold] {chip}")
+        else:
+            self._log("[bold]Target acquired:[/bold] "
+                      "[dim italic]cloaked network (hidden SSID)[/dim italic]")
+        self._log(treelog.branch(f"[dim]Encryption:[/dim] {enc}"))
+        self._log(treelog.branch(f"[dim]BSSID:[/dim] {ap.bssid}"))
+        if array:
+            try:
+                ok = await array.set_channel(ap.channel, scan=False)
+            except Exception:
+                logger.exception("Focus v2 channel tune failed")
+                ok = False
+            if ok:
+                self._log(treelog.leaf(f"Tuned to [cyan]channel {ap.channel}[/cyan]"))
+            else:
+                self._log(treelog.leaf(
+                    f"[yellow]Tried to tune to channel {ap.channel}[/yellow]"))
+        else:
+            self._log(treelog.leaf("[yellow]no interface: passive view only[/yellow]"))
+
+        if ap.pmf_required:
+            self._log("[bold yellow]PMF Required:[/] "
+                      "AP requires [bold]Protected Management Frames[/]")
+            self._log(treelog.leaf("[italic]Deauth[/] attacks have been disabled"))
+
+        self._log_persisted_history(ap)
+
+        if Config.is_silenced(ap.bssid):
+            self._log_silenced()
+            return
+
+        enc = (ap.encryption or "").upper()
+        if enc == "WEP":
+            self._log("[bold italic]Passively listening[/bold italic] for [bold]WEP IVs[/bold]")
+        elif enc not in ("OPEN", "", "WPA3 "):
+            # 'Crackable' because the pipeline filters SAE-only out.
+            self._log("[bold italic]Passively listening[/bold italic] for")
+            self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
+            self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))
+
+    def _log_persisted_history(self, ap) -> None:
+        """On focus init, print captures/ artifacts for this AP to the log."""
+        wps_state = load_run_state(Config.captures_dir, ap.bssid)
+        wps_progress = run_progress_line(wps_state) if wps_state else None
+        rows = list(self.app.vault.detailed_summary(ap).items())
+        if not rows and not wps_progress:
+            return
+        if rows:
+            self._log("[bold]Existing captures[/bold] in [cyan]captures/[/cyan]:")
+        # Pad the label column so the dates line up.
+        label_w = max((len(f"{label} ({n})") for label, (_cap, n) in rows), default=0)
+        for i, (label, (cap, n)) in enumerate(rows):
+            # The WPS progress leaf, if present, takes the └, so a saved row is the last leaf only when nothing follows.
+            last = i == len(rows) - 1 and wps_progress is None
+            line = treelog.leaf if last else treelog.branch
+            pad = " " * (label_w - len(f"{label} ({n})"))
+            head = f"[bold cyan]{label}[/bold cyan] [dim]({n})[/dim]{pad}"
+            dt = datetime.fromtimestamp(cap.timestamp)
+            if label == "WEP Key":
+                self._log(line(f"{head}  {_wep_key_chip(cap.value)} "
+                               f"[dim]{dt:%Y-%m-%d %H:%M}[/dim]"))
+            elif label in ("WPS PIN", "WPS PBC"):
+                creds = []
+                if cap.value:
+                    creds.append(f"[black bold on cyan] {escape(cap.value)} [/black bold on cyan]")
+                if cap.pin:
+                    creds.append(f"[dim]PIN[/dim] {escape(cap.pin)}")
+                joined = ("  ".join(creds) + "  ") if creds else ""
+                self._log(line(f"{head}  {joined}[dim]{dt:%Y-%m-%d %H:%M}[/dim]"))
+            else:
+                self._log(line(f"{head}  {dt:%Y-%m-%d} "
+                               f"[dim]{dt:%H:%M}[/dim]"))
+        if wps_progress is not None:
+            self._log(treelog.leaf(wps_progress) if rows else wps_progress)
+
+    # ----- per-tick paint ----------------------------------------------------
+
+    def _tick(self) -> None:
+        if self._target_ap is None or not self.is_current:
+            return
+        ap = self._target_ap
+
+        # WEP recovers its key while still running; WPS reaches a terminal phase while its
+        # task drains. Ask them to stop so they reap (below) on a following tick.
+        cur = self._controls.current
+        if isinstance(cur, WepCampaign) and cur.recovered_key is not None:
+            result = self.app.vault.save_wep_key(ap, cur.recovered_key)
+            if result is not None:
+                self._log(treelog.leaf(_save_line(result)))
+            self._controls.request_stop()
+        elif isinstance(cur, WpsCampaign) and (
+                cur.state.phase == "done" or cur.status in ("failed", "error")):
+            self._controls.request_stop()
+
+        # Reap a finished campaign: log/save its result, free the slot.
+        finished = self._controls.reap()
+        if isinstance(finished, PmkidHarvestAttack):
+            self._finish_pmkid(finished)
+        elif isinstance(finished, SaeCampaign):
+            self._finish_sae(finished)
+        elif isinstance(finished, DeauthCampaign):
+            self._finish_deauth(finished)
+        elif isinstance(finished, EvilTwinCampaign):
+            self._finish_eviltwin(finished)
+        elif isinstance(finished, WpsCampaign):
+            self._finish_wps_pin(finished)
+        elif isinstance(finished, WpsPbcCapture):
+            self._finish_pbc_capture(finished, ap)
+        # Clear the manual-stop suppression when the window closes; a fresh one re-arms.
+        if not ap.wps_pbc_active:
+            self._pbc_user_stopped = False
+        if self._should_auto_invade_pbc(ap):
+            self._start_pbc_capture(ap)
+
+        status = self._status()
+        if status != self._last_status:
+            self._last_status = status
+            self.query_one("#status", Static).update(self._render_status(status))
+        self.query_one("#card", CardEndpoint).update(dynamic=fm.card_dynamic())
+        self._sync_card()
+        self.query_one("#router", RouterEndpoint).update(**self._router_values())
+        clients = self.query_one("#clients", ClientsList)
+        clients.sync(self._client_list())
+        clients.set_deauth_enabled(not fm.deauth_blocked(ap))
+        self.refresh_buttons()
+        self._balance_status()
+        self._sync_bindings()
+        self._refresh_status_footer()
+        array = self.app.array
+        self._drive_leds(ap, array)
+        self._drain_capture_events(ap, array.forged_macs if array else set(), time.time())
+
+    def _should_auto_invade_pbc(self, ap) -> bool:
+        if not (ap.wps_pbc_active and self.app.pbc_enabled):
+            return False
+        if Config.is_silenced(ap.bssid) or ap.is_hidden:
+            return False
+        if self.app.vault.has_psk(ap) or self._pbc_user_stopped:
+            return False
+        if time.monotonic() < self._pbc_retry_after or self._pbc_busy():
+            return False
+        return self._controls.current is None   # no other attack owns the radio
+
+    def _distribute(self) -> None:
+        """Fill the mid band to full 2-row sparklines."""
+        avail = max(1, self.size.height - _TOPBAR_H - _CHROME_H)
+        center = min(_CENTER_MAX, max(_CENTER_MIN, avail - _BOTTOM_MIN))
+        center = max(1, min(center, avail - 1))
+        mid = self.query_one("#mid")
+        mid.styles.height = center
+        self.query_one("#bottom").styles.height = avail - center
+        pad = max(0, round((self.size.width - _PAD_START) * _PAD_RATE))
+        mid.styles.padding = (0, pad, 0, pad)
+        self._balance_status()
+
+    def _balance_status(self) -> None:
+        """Center the status label over the sparklines despite the button row on its left."""
+        topbar_w = self.query_one("#topbar").content_size.width
+        actions_w = self.query_one("#actions").outer_size.width
+        widest = max((Text.from_markup(s, emoji=False).cell_len
+                      for s in (self._last_status or [])), default=0)
+        spacer = min(actions_w, max(0, topbar_w - actions_w - widest))
+        if spacer != self._rspacer_w:
+            self._rspacer_w = spacer
+            self.query_one("#rspacer", Static).styles.width = spacer
+
+    def _refresh_status_footer(self) -> None:
+        """Refresh status footer under sparklines."""
+        ap = self._target_ap
+        if ap is None:
+            return
+        array = self.app.array
+        cur = self._controls.current
+        wep = cur if isinstance(cur, WepCampaign) else None
+        lines = [Text.from_markup(m, emoji=False)
+                 for m in fm.status_footer_lines(ap, array, wep, time.time())]
+        self.query_one("#dashboard", PacketDashboard).set_footer(lines)
+
+    # ----- endpoint LED flicker (instrumentation) ----------------------------
+
+    # Router LED = RX from the target; card LED = TX we send.
+    _RX_KEYS = ("beacon", "data", "eapol", "wep_iv")
+    _TX_KEYS = ("inject", "deauth")
+
+    def _drive_leds(self, ap, array) -> None:
+        """Flicker the endpoint LEDs on real traffic."""
+        if array is None:
+            return
+        snap = array.packet_stats.snapshot(ap.bssid)
+        prev, self._prev_stats = self._prev_stats, snap
+        if prev is None:   # first frame after (re)acquire, no delta yet
+            return
+        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._RX_KEYS):
+            self.query_one("#router", RouterEndpoint).flicker()
+        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._TX_KEYS):
+            self.query_one("#card", CardEndpoint).flicker()
+
+    # ----- event log (capture pipeline) --------------------------------------
+
+    def _drain_capture_events(self, ap, forged_macs: Set[str], now: float) -> None:
+        # EAPOL + handshake completions go through the aggregator (one tree per client); PMKID / decloak are immediate.
+        if Config.is_silenced(ap.bssid):
+            return
+        for ev in self._events.poll(ap, forged_macs=forged_macs):
+            if ev.kind == CaptureKind.EAPOL:
+                self._eapol_agg.on_eapol(ev, now)
+            elif ev.kind == CaptureKind.HANDSHAKE:
+                # Save instantly
+                result = self.app.vault.save_handshake(ap, ev.client_mac)
+                hint = _save_line(result) if result is not None else None
+                self._emit_lines(self._eapol_agg.on_handshake(ev, now, save_hint=hint))
+            else:
+                self._log_capture_event(ev, ap)
+        # Flush any per-client bursts that have gone quiet; label real-but-uncrackable ones.
+        for lines in self._eapol_agg.tick(now, label_for=lambda mac: self._uncrackable_reason(ap, mac)):
+            self._emit_lines(lines)
+
+    def _emit_lines(self, lines) -> None:
+        for ln in lines:
+            self._log(ln)
+
+    def _uncrackable_reason(self, ap, mac: str) -> str | None:
+        """The uncrackable-AKM badge (SAE/FT/EAP/OWE) for a client's handshake, else None."""
+        hs = ap.handshakes.get(mac)
+        return handshake_uncrackable_label(hs) if hs is not None else None
+
+    def _log_capture_event(self, ev: CaptureEvent, ap) -> None:
+        if ev.kind == CaptureKind.PMKID:
+            self._log(
+                f"[black bold on green] ✓ PMKID captured [/black bold on green] "
+                f"from [bold]{short_sta(ev.client_mac)}[/bold]"
+            )
+            result = self.app.vault.save_pmkid(ap, ev.client_mac)
+            if result is not None:
+                self._log(treelog.leaf(_save_line(result)))
+        elif ev.kind == CaptureKind.DECLOAK:
+            method_label = DECLOAK_METHOD_LABELS.get(ev.method or "", ev.method or "?")
+            self._log(
+                f"[bold]Decloaked[/bold] [cyan]{escape(ev.bssid)}[/cyan] → "
+                f"[green]{escape(ev.ssid or '')}[/green] "
+                f"[dim]via {method_label}[/dim]"
+            )
+
+    def _log(self, markup: str) -> None:
+        ts = time.strftime("%H:%M:%S")
+        try:
+            log = self.query_one("#log", LogBand)
+        except Exception:
+            return
+        log.write(Text.from_markup(f"[dim]{ts}[/dim]  {markup}", emoji=False))
+
+    # ----- button dispatch ---------------------------------------------------
+
+    async def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "back":
+            await self.action_go_back()
+        elif bid == "deauth-all":
+            self.run_worker(self._run_deauth_broadcast(), exclusive=True)
+        elif bid == "btn-deauth":
+            self._toggle_deauth()
+        elif bid == "btn-pmkid":
+            self._toggle_pmkid()
+        elif bid == "btn-wps-pin":
+            self._toggle_wps_pin()
+        elif bid == "btn-eviltwin":
+            self._toggle_eviltwin()
+        elif bid == "btn-gen-ivs":
+            self._toggle_generate_ivs()
+        elif bid == "btn-chop":
+            self._toggle_chop()
+        elif bid == "btn-stop-pbc":
+            self._user_stop_pbc()
+
+    def on_client_widget_deauth_requested(self, event: ClientWidget.DeauthRequested) -> None:
+        self.run_worker(self._run_deauth_selected(event.mac), exclusive=True)
+
+    def on_client_widget_fingerprint_clicked(self, event: ClientWidget.FingerprintClicked) -> None:
+        self.app.push_screen(FingerprintModal(event.mac, event.fingerprint, offset=event.offset))
+
+    def on_router_endpoint_identity_requested(self, event: RouterEndpoint.IdentityRequested) -> None:
+        self._log_identity_details_text(event.details)
+
+    def on_router_endpoint_probe_requested(self, event: RouterEndpoint.ProbeRequested) -> None:
+        ap = self._target_ap
+        if ap is None or not ap.wps:
+            return
+        if self._is_probing():
+            return
+        if self._any_campaign_active():
+            self._log(treelog.leaf_fail("cannot probe while attacks are active"))
+            return
+        self._probe_task = asyncio.create_task(self._run_probe(ap))
+        self.refresh_buttons()
+        self._sync_bindings()
+        self.query_one("#router", RouterEndpoint).update(**self._router_values())
+
+    def on_router_endpoint_probe_cancel_requested(self, event: RouterEndpoint.ProbeCancelRequested) -> None:
+        self._stop_probe()
+
+    async def _run_probe(self, ap: AccessPoint) -> None:
+        array = self.app.array
+        if not array:
+            self._log(treelog.leaf_fail("no active interface"))
+            return
+        iface = array.select_iface(ap.channel)
+        if iface is None:
+            self._log(treelog.leaf_fail(f"no interface can probe CH {ap.channel}"))
+            return
+        label = escape(ap.ssid or ap.bssid)
+        self._log(treelog.header(
+            f"[bold]Identity probe[/bold] on [cyan]{label}[/cyan] [dim](CH {ap.channel})[/dim]"
+        ))
+        try:
+            async with array.claim(iface):
+                result = await probe_ap(iface, ap)
+                if result.ok:
+                    self._log(treelog.leaf_ok(f"probe matched: [bold]{escape(ap.identity.summary)}[/bold]"))
+                    self._log_identity_details(ap)
+                else:
+                    self._log(treelog.leaf_fail(
+                        f"identity probe failed [dim]({escape(result.detail or 'no detail')})[/dim]"
+                    ))
+        except asyncio.CancelledError:
+            self._log(treelog.leaf_fail("identity probe cancelled"))
+            raise
+        except Exception as exc:
+            logger.exception("Active probe failed")
+            self._log(treelog.leaf_fail(f"identity probe error: {escape(str(exc))}"))
+        finally:
+            self._probe_task = None
+            try:
+                self.refresh_buttons()
+                self._sync_bindings()
+                self.query_one("#router", RouterEndpoint).update(**self._router_values())
+            except Exception:
+                pass
+
+    def _log_identity_details(self, ap: AccessPoint) -> None:
+        details = fm.router_identity_details(ap)
+        if details:
+            self._log_identity_details_text(details)
+
+    def _log_identity_details_text(self, details: str) -> None:
+        self._log("[bold]Router identity[/bold]")
+        lines = [line for line in details.splitlines() if line]
+        for i, line in enumerate(lines):
+            connector = treelog.leaf if i == len(lines) - 1 else treelog.branch
+            self._log(connector(line))
+
+    # ----- command-bar (footer hotkeys) --------------------------------------
+
+    def check_action(self, action: str, parameters: tuple) -> Optional[bool]:
+        """Drive the footer keys off the same state as the buttons."""
+        if self._is_probing():
+            if action in ("campaign", "deauth_all", "wps_pbc_mode"):
+                return False
+        ap = self._target_ap
+        if action == "campaign":
+            if ap is None:
+                return False
+            key = parameters[0]
+            if key == "chop":                      # WEP sub-action: enabled only while WEP runs (and not silenced)
+                if not WepCampaign.visible(ap):
+                    return False
+                running = isinstance(self._controls.current, WepCampaign)
+                return None if (not running or Config.is_silenced(ap.bssid)) else True
+            cls = fm.CAMPAIGN_BY_KEY.get(key)
+            if cls is None or not cls.visible(ap):
+                return False
+            active = Campaign.active
+            if active is not None and active.key == key and cls.stoppable:
+                return True
+            return None if fm.campaign_blocked(cls, ap) is not None else True
+        if action == "deauth_all":
+            if ap is None:
+                return False
+            return None if fm.deauth_blocked(ap) else True
+        if action == "silence":
+            return False if (ap is not None and Config.is_silenced(ap.bssid)) else True
+        if action == "unsilence":
+            return True if (ap is not None and Config.is_silenced(ap.bssid)) else False
+        return True
+
+    def _sync_bindings(self) -> None:
+        """Repaint the footer only when a key's shown/greyed state changes."""
+        ap = self._target_ap
+        if ap is None:
+            sig: Optional[tuple] = None
+        else:
+            active = Campaign.active
+            probing = self._is_probing()
+
+            def _disabled(cls) -> bool:
+                if active is not None and active.key == cls.key and cls.stoppable:
+                    return False
+                return fm.campaign_blocked(cls, ap) is not None
+
+            btn_sig = tuple((cls.key, cls.visible(ap), True if probing else _disabled(cls))
+                            for cls in fm.BUTTON_CAMPAIGNS)
+            sig = (btn_sig,
+                   True if probing else fm.deauth_blocked(ap),
+                   Config.is_silenced(ap.bssid),
+                   probing)
+        if sig != self._binding_sig:
+            self._binding_sig = sig
+            self.refresh_bindings()
+
+    def action_campaign(self, camp_key: str) -> None:
+        """Toggle a hotkey's campaign."""
+        toggle = self._campaign_toggles.get(camp_key)
+        if toggle is not None:
+            toggle()
+        self._sync_bindings()
+
+    def action_deauth_all(self) -> None:
+        """'d': one-shot broadcast deauth, matching the client-panel button."""
+        self.run_worker(self._run_deauth_broadcast(), exclusive=True)
+
+    def action_wps_pbc_mode(self) -> None:
+        """'w': toggle the shared WPS PBC auto-invade."""
+        self.app.pbc_enabled = not getattr(self.app, "pbc_enabled", True)
+        self._log_pbc_status()
+
+    def _log_pbc_status(self) -> None:
+        if getattr(self.app, "pbc_enabled", True):
+            self._log("[bold]WPS PushButton Extraction[/bold] "
+                      "[bold green]enabled[/bold green] [dim](press w to toggle)[/dim]")
+        else:
+            self._log("[bold]WPS PushButton Extraction[/bold] "
+                      "[yellow]disabled[/yellow] [dim](detect only, press w to toggle)[/dim]")
+
+    def action_silence(self) -> None:
+        self._toggle_silence()
+
+    def action_unsilence(self) -> None:
+        self._toggle_silence()
+
+    def _toggle_silence(self) -> None:
+        """Flip the focused AP's silenced state (campaigns off, handshakes/PMKIDs ignored)."""
+        if self._target_ap is None:
+            return
+        bssid = self._target_ap.bssid.lower()
+        if bssid in Config.silenced_bssids:
+            Config.silenced_bssids.remove(bssid)
+            self._log("[green bold] ● AP [italic]Un[/italic]Silenced ✓[/]")
+            self._log("[dim green]" + treelog.leaf("campaigns enabled, listening for handshakes") + "[/]")
+        else:
+            Config.silenced_bssids.append(bssid)
+            self._log_silenced()
+        self.app.persist_config()
+        self.refresh_buttons()
+        self._sync_bindings()
+
+    def _log_silenced(self) -> None:
+        self._log("[yellow bold] ● AP Silenced[/] [red]✗S[/]")
+        self._log("[yellow dim]" + treelog.branch("campaigns disabled, handshakes ignored.") + "[/]")
+        self._log("[yellow dim]" + treelog.leaf("press [bold]s[/bold] to unsilence.") + "[/]")
+
+    # ----- deauth ------------------------------------------------------------
+
+    async def _run_deauth_broadcast(self) -> None:
+        """Worker: broadcast-deauth every station associated with the focused AP."""
+        ap = self._target_ap
+        array = self.app.array
+        card = array.select_iface(ap.channel) if (ap and array) else None
+        if not ap or card is None:
+            self._log("[red]✗ No target / no card on this channel. Aborting Broadcast.[/red]")
+            return
+        self._log("[bold]Broadcast de-auth: all clients[/bold]")
+        try:
+            sent = await card.deauth_broadcast(ap.bssid, count=self._DEAUTH_BCAST_COUNT)
+        except Exception as exc:
+            logger.exception("Broadcast deauth crashed")
+            self._log(treelog.leaf_fail(f"Broadcast failed: {escape(str(exc))}"))
+            return
+        # Broadcast frames are never ACKed: a neutral leaf (no green ✓).
+        self._log(treelog.leaf(f"sent {sent} de-auth frames [dim](AP→broadcast)[/dim]"))
+
+    async def _run_deauth_selected(self, mac: str) -> None:
+        """Worker: deauth a specific client (the inline ✕ that was clicked)."""
+        ap = self._target_ap
+        array = self.app.array
+        card = array.select_iface(ap.channel) if (ap and array) else None
+        if not ap or card is None:
+            self._log("[red]✗ No target / no card on this channel. Aborting Deauth.[/red]")
+            return
+        self._log(f"[bold]De-authenticating Client {escape(mac)}[/bold]")
+        try:
+            res = await card.deauth_client(ap.bssid, mac, rounds=self._DEAUTH_SEL_ROUNDS)
+        except Exception as exc:
+            logger.exception("Deauth %s crashed", mac)
+            self._log(treelog.leaf_fail(f"Deauth failed: {escape(str(exc))}"))
+            return
+        self._log(treelog.branch(
+            f"sent {res.total_sent} de-auth frames "
+            f"[dim](AP↔Client ×{res.client_sent})[/dim]"))
+        if not res.measured:  # card lacks TX-ACK detection, nothing to confirm
+            self._log(treelog.leaf("[dim]delivery not measured (no TX-ACK on this card)[/dim]"))
+            return
+        detail = f"[dim](client {res.client_acks}/{res.client_sent} · AP {res.ap_acks}/{res.ap_sent})[/dim]"
+        if res.total_acked:
+            self._log(treelog.leaf(
+                f"[bold][cyan]{res.total_acked}[/cyan]/{res.total_sent} de-auths ACK'd[/bold] {detail}"))
+        else:
+            self._log(treelog.leaf(
+                f"[bold][red]0[/red]/{res.total_sent} de-auths ACK'd[/bold] [dim](silent AP & client)[/dim]"))
+
+    # ----- PMKID -------------------------------------------------------------
+
+    def _toggle_pmkid(self) -> None:
+        if isinstance(self._controls.current, PmkidHarvestAttack):
+            self._controls.request_stop()
+        else:
+            self._start_pmkid()
+        self.refresh_buttons()
+
+    def _toggle_sae(self) -> None:
+        if isinstance(self._controls.current, SaeCampaign):
+            self._controls.request_stop()
+        else:
+            self._start_sae()
+        self.refresh_buttons()
+
+    def _start_sae(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Aborting SAE capture.[/red]")
+            return
+        self._log(f"SAE capture on [bold cyan]{escape(ap.ssid or ap.bssid)}[/bold cyan] "
+                  f"(passive: PMF cannot stop it)")
+        self._controls.start(SaeCampaign, array, ap,
+                             log=lambda m: self._log(treelog.branch(m)))
+
+    def _finish_sae(self, camp) -> None:
+        """Save captured pairs (if any) when the SAE listen ends."""
+        if camp.pairs:
+            result = self.app.vault.save_sae(camp.target, camp.frames_for_pcap())
+            hint = _save_line(result) if result is not None else None
+            self._log(treelog.branch_ok(
+                f"[black bold on cyan]  SAE: {len(camp.pairs)} pair(s)"
+                + (f" {hint} " if hint else "") + " [/black bold on cyan]"))
+            name = camp.target.ssid or camp.target.bssid
+            self.notify(f"[bold]{escape(name)}[/bold]: {len(camp.pairs)} SAE pair(s) saved. "
+                        f"Convert with hcxpcapngtool, crack with hashcat -m 22000.",
+                        title="SAE captured", timeout=6)
+        elif getattr(camp, "stopped", False):
+            self._log(treelog.leaf_fail("[bright_red bold]Stopped SAE listen[/]"))
+        else:
+            self._log(treelog.leaf_fail("No SAE pairs heard"))
+
+    def _start_pmkid(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Aborting PMKID harvest.[/red]")
+            return
+        self._log(pmkid_log.header(escape(ap.ssid or ap.bssid)))
+        self._controls.start(PmkidHarvestAttack, array, ap,
+                             log=lambda m: self._log(treelog.branch(m)))
+
+    def _finish_pmkid(self, camp) -> None:
+        """Handle a completed harvest."""
+        if camp.pmkid:
+            result = self.app.vault.save_pmkid(camp.target, camp.client_mac)
+            hint = _save_line(result) if result is not None else None
+            self._emit_lines(pmkid_log.verdict_success(hint))
+            # Detector skips forged MACs, so toast the active-harvest win here too.
+            name = camp.target.ssid or camp.target.bssid
+            body = (f"[bold]{escape(name)}[/bold] on channel [bold]{camp.target.channel}[/bold] "
+                    f"[dim bold](BSSID: {escape(camp.target.bssid)})[/dim bold]")
+            self.notify(body, title=f"{CAPTURE_TOAST_TITLES[CaptureKind.PMKID]} (M1)", timeout=6)
+        elif getattr(camp, "stopped", False):
+            self._log(treelog.leaf_fail("[bright_red bold]Stopped harvest[/]"))
+        else:
+            self._emit_lines(pmkid_log.verdict_failure(camp.fail_reason))
+
+    # ----- Deauth ------------------------------------------------------------
+
+    def _toggle_deauth(self) -> None:
+        if isinstance(self._controls.current, DeauthCampaign):
+            self._controls.request_stop()
+        else:
+            self._start_deauth()
+        self.refresh_buttons()
+
+    def _start_deauth(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Aborting Deauth.[/red]")
+            return
+        self._log(f"[bold]Deauth[/bold] of [bold]{escape(ap.ssid or ap.bssid)}[/bold]: "
+                  "forcing a re-handshake")
+        self._controls.start(DeauthCampaign, array, ap, log=self._log)
+
+    def _finish_deauth(self, camp) -> None:
+        """Reap a completed deauth run. A captured handshake is saved+toasted by the
+        always-on capture path (CaptureKind.HANDSHAKE); we only log the campaign's end."""
+        if camp.captured:
+            self._log("[bold green]✓ Deauth provoked a crackable handshake[/bold green]")
+        else:
+            self._log("[bright_red bold]Deauth stopped[/]")
+
+    # ----- EvilTwin ----------------------------------------------------------
+
+    def _toggle_eviltwin(self) -> None:
+        if isinstance(self._controls.current, EvilTwinCampaign):
+            self._controls.request_stop()
+        else:
+            self._start_eviltwin()
+        self.refresh_buttons()
+
+    def _start_eviltwin(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array or not array.members:
+            self._log("[red]✗ No target / interface. Cannot start EvilTwin.[/red]")
+            return
+        self.app.push_screen(EvilTwinInputModal(ap, array.members), self._on_eviltwin_input)
+
+    def _on_eviltwin_input(self, evil_input: Optional[EvilTwinInput]) -> None:
+        """The modal's callback: build + run EvilTwin from its input (the one campaign
+        with a pre-construction step, so it can't go through a plain toggle)."""
+        if evil_input is None:
+            return
+        ap, array = self._target_ap, self.app.array
+        if not ap or not array:
+            return
+        try:
+            started = self._controls.start(EvilTwinCampaign, array, ap, evil_input=evil_input)
+        except Exception as exc:
+            logger.exception("EvilTwin start failed")
+            self._log(f"[bold red]✗ EvilTwin failed to start:[/bold red] {escape(str(exc))}")
+            return
+        if started is None:
+            return
+        self._log(f"[bold cyan]EvilTwin[/bold cyan] of [bold cyan]"
+                  f"{escape(ap.ssid or ap.bssid)}[/bold cyan] active on ch {evil_input.twin_channel}"
+                  f" [dim]({evil_input.twin_bssid})[/dim]")
+        self._log(treelog.branch(f"[italic]punting clients[/italic] [dim]on[/dim] ch {ap.channel}"))
+        self._log(treelog.leaf("[dim]waiting for clients to auth…[/dim]"))
+        self.refresh_buttons()
+
+    def _finish_eviltwin(self, camp) -> None:
+        """Reap a finished EvilTwin (user-stopped, or captured and released the radio itself)."""
+        if camp.captured:
+            self._log("[bold green]✓ EvilTwin captured a crackable handshake[/bold green]")
+        else:
+            self._log("[bold red]EvilTwin stopped[/bold red]")
+
+    # ----- WEP: Generate IVs (Replay) + Chop ---------------------------------
+
+    def _toggle_generate_ivs(self) -> None:
+        cur = self._controls.current
+        if isinstance(cur, WepCampaign):
+            if cur.recovered_key is None:
+                self._controls.request_stop()
+            else:
+                self._controls.stop()          # finished campaign lingering; clear then restart
+                self._start_generate_ivs()
+        else:
+            self._start_generate_ivs()
+        self.refresh_buttons()
+
+    def _start_generate_ivs(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / interface. Cannot Generate IVs.[/red]")
+            return
+        try:
+            self._controls.start(WepCampaign, array, ap, log=self._log)
+        except Exception as exc:
+            logger.exception("Generate IVs start failed")
+            self._log(f"[bold red]✗ Generate IVs failed to start:[/bold red] {escape(str(exc))}")
+
+    def _toggle_chop(self) -> None:
+        camp = self._controls.current
+        if not isinstance(camp, WepCampaign):
+            self._log("[yellow]Start Replay first[/yellow] [dim](ChopChop "
+                      "manufactures an ARP seed for the replay engine)[/dim]")
+            return
+        if camp.chop_active:
+            camp.stop_chop()
+            self._log("[cyan]→ Chop stopped[/cyan] [dim](back to ARP replay)[/dim]")
+        else:
+            camp.start_chop()
+        self.refresh_buttons()
+
+    # ----- WPS PIN -----------------------------------------------------------
+
+    def _toggle_wps_pin(self) -> None:
+        if isinstance(self._controls.current, WpsCampaign):
+            self._controls.request_stop()
+        else:
+            self._start_wps_pin()
+        self.refresh_buttons()
+
+    def _start_wps_pin(self) -> None:
+        ap = self._target_ap
+        array = self.app.array
+        if not ap or not array:
+            self._log("[red]✗ No target / pool. Cannot start WPS PIN.[/red]")
+            return
+        # Warn when the elected card can't HW-ACK a spoofed MAC (still runs PIN fine, just spammy).
+        card = array.select_iface(ap.channel)
+        if card is not None:
+            warning = card.active_monitor_warning()
+            if isinstance(warning, str):
+                self._log(warning)
+        self._launch_wps_pin(ap, array)
+
+    def _launch_wps_pin(self, ap, array) -> None:
+        try:
+            name = escape(ap.ssid or ap.bssid)
+            self._log(f"[bold]WPS PIN brute[/bold] started on [bold cyan]{name}[/bold cyan]")
+            self._controls.start(WpsCampaign, array, ap,
+                                 log=lambda m: self._log(treelog.branch(m)))
+        except Exception as exc:
+            logger.exception("WPS PIN start failed")
+            self._log(f"[bold red]✗ WPS PIN failed to start:[/bold red] {escape(str(exc))}")
+
+    def _finish_wps_pin(self, camp) -> None:
+        """Reap a finished WPS PIN sweep: log/save the found PIN, else the give-up reason."""
+        ssid = escape(camp.target.ssid or camp.bssid)
+        if camp.state.found_pin:
+            camp.target.wps_pin = camp.state.found_pin
+            camp.target.wps_pin_psk = camp.state.found_psk
+            self._log(treelog.branch_ok(
+                f"[black bold on cyan]  WPS PIN for {ssid}: "
+                f"{escape(camp.state.found_pin)}  [/black bold on cyan]"))
+            self._log(treelog.branch(
+                f"[black bold on green] Password for {ssid}: "
+                f"\"{escape(camp.state.found_psk or '')}\" [/black bold on green]"))
+            try:
+                result = self.app.vault.save_wps_pin(
+                    camp.target, camp.state.found_pin, camp.state.found_psk or "")
+                if result is None:
+                    self._log(treelog.leaf("[dim](save failed)[/dim]"))
+                else:
+                    self._log(treelog.leaf(_save_line(result)))
+            except Exception:
+                self._log(treelog.leaf("[dim](save failed)[/dim]"))
+        elif getattr(camp, "fail_reason", None):
+            self._log(treelog.leaf_fail(
+                f"[bold red]giving up:[/bold red] [yellow]{escape(camp.fail_reason)}[/yellow]"))
+        else:
+            self._log(treelog.leaf(
+                f"[yellow]WPS PIN stopped[/yellow] "
+                f"[dim]({camp.state.tested} tested, phase {camp.state.phase})[/dim]"))
+
+    # ----- WPS PBC auto-capture ----------------------------------------------
+
+    def _start_pbc_capture(self, ap) -> None:
+        array = self.app.array
+        if not array:
+            return
+        self._log("[bold cyan]WPS PushButton:[/bold cyan] [bold green]Window Open[/bold green] "
+                  "(auto-capturing PSK)")
+        self._controls.start(WpsPbcCapture, array, ap,
+                             log=lambda m: self._log(treelog.branch(m)))
+
+    def _finish_pbc_capture(self, camp, ap) -> None:
+        """Handle a completed PBC attempt."""
+        if getattr(camp, "stopped", False):
+            self._log(treelog.leaf(
+                "[yellow]stopped[/yellow] [dim](radio freed; auto-invade resumes on "
+                "the next window)[/dim]"))
+            return
+        if camp.error is not None:
+            self._log(treelog.leaf_fail(f"capture error: {escape(str(camp.error))}"))
+            return
+        outcome = camp.outcome
+        if outcome is None:
+            return
+        if outcome.result is PinResult.SUCCESS:
+            ap.wps_pbc_psk = outcome.psk
+            name = escape(outcome.ssid or ap.ssid or ap.bssid)
+            self._log(treelog.branch(
+                f"[black bold on green] Password for {name}: "
+                f"\"{escape(outcome.psk)}\" [/black bold on green]"))
+            try:
+                result = self.app.vault.save_wps_pbc(ap, outcome.psk)
+                if result is None:
+                    self._log(treelog.leaf("[dim](save failed)[/dim]"))
+                else:
+                    self._log(treelog.leaf(_save_line(result)))
+            except Exception:
+                self._log(treelog.leaf("[dim](save failed)[/dim]"))
+        else:
+            self._pbc_retry_after = time.monotonic() + _PBC_RETRY_COOLDOWN_S
+            self._log(treelog.leaf_warn(
+                f"{outcome.result.value} [dim]({escape(outcome.detail)})[/dim], "
+                f"retrying in {_PBC_RETRY_COOLDOWN_S:.0f}s while the window's open"))
+
+    def _user_stop_pbc(self) -> None:
+        """The transient 'Stop PBC' button."""
+        if not isinstance(self._controls.current, WpsPbcCapture):
+            return
+        self._pbc_user_stopped = True
+        self._controls.request_stop()
+        self.refresh_buttons()
+
+    # ----- navigation --------------------------------------------------------
+
+    async def action_go_back(self) -> None:
+        # Tear down any running attack: Scanner doesn't own the AP's channel, and a forged daemon would keep injecting.
+        self._controls.stop()
+        self._stop_probe()
+        ap = self._target_ap
+        logger.info("[FOCUS] leave: ssid=%r bssid=%s",
+                    getattr(ap, "ssid", None), getattr(ap, "bssid", None))
+        self.app.pop_screen()

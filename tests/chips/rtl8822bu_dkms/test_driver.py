@@ -1,0 +1,64 @@
+"""Hardware-free regression for the connect() detected-config log.
+
+Known hardware-verified EFUSE/chip-cut burns are logged untagged; a burn that selects a
+ported-but-HW-untested branch is tagged `[untested variant]`, and an rfe 15/18 board (RFE pinmux not
+ported, iFEM fallback) gets an explicit warning.
+"""
+import logging
+from types import SimpleNamespace
+
+from airscope.chips.rtl8822bu_dkms.driver import Rtl8822buDkmsDriver
+
+
+def _chip(rfe_type=3, chip_ver=3):
+    info = SimpleNamespace(chip_ver=chip_ver)
+    e = SimpleNamespace(rfe_type=rfe_type, crystal_cap=0x2E, thermal_meter=0x12,
+                        eeprom_id_valid=True, usb_mode_switch=False, eeprom_vid=0x2357,
+                        eeprom_pid=0x0115, regulatory=1, interface_sel=0,
+                        bt_coexist_raw=False, bt_coexist=False,
+                        bt_ant_num=1, bt_ant_path=0, board_type=0, external_pa_2g=False,
+                        external_lna_2g=False, external_pa_5g=False, external_lna_5g=False,
+                        type_gpa=0, type_apa=0, type_glna=0, type_alna=0,
+                        mac_address="00:11:22:33:44:55")
+    return info, e
+
+
+def _log(info, e, caplog):
+    drv = object.__new__(Rtl8822buDkmsDriver)     # skip __init__ (no USB device needed)
+    with caplog.at_level(logging.INFO, logger="airscope.chips.rtl8822bu_dkms.driver"):
+        drv._log_detected_config(info, e)
+    return caplog.text
+
+
+def test_reference_burn_is_untagged(caplog):
+    txt = _log(*_chip(), caplog)
+    assert "rfe_type=3" in txt and "cut=3" in txt
+    assert "id_valid=1" in txt and "eeprom_vidpid=2357:0115" in txt
+    assert "bt_raw=0" in txt and "board_type=0x00" in txt
+    assert "untested variant" not in txt
+
+
+def test_live_verified_rfe2_cut3_is_untagged(caplog):
+    txt = _log(*_chip(rfe_type=2, chip_ver=3), caplog)
+    assert "rfe_type=2" in txt and "cut=3" in txt
+    assert "untested variant" not in txt
+
+
+def test_non_verified_rfe_is_tagged(caplog):
+    info, e = _chip(rfe_type=1)                    # eFEM
+    txt = _log(info, e, caplog)
+    assert "[untested variant]" in txt
+
+
+def test_non_reference_cut_is_tagged(caplog):
+    info, e = _chip(chip_ver=1)                    # B-cut
+    txt = _log(info, e, caplog)
+    assert "[untested variant]" in txt
+
+
+def test_unported_rfe_pinmux_warns(caplog):
+    info, e = _chip(rfe_type=15)                   # phydm_8822b_type15_rfe not ported
+    with caplog.at_level(logging.WARNING, logger="airscope.chips.rtl8822bu_dkms.driver"):
+        _log(info, e, caplog)
+    assert "not ported" in caplog.text and "iFEM fallback" in caplog.text
+

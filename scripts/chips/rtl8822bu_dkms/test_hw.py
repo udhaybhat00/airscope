@@ -1,0 +1,396 @@
+"""RTL8822BU (DKMS port) — live hardware smoke test: cold init + monitor RX (beacons).
+
+Passive: control transfers + firmware page-writes + monitor bulk-IN RX only. No 802.11 TX.
+
+Phases:
+  open   : USB claim + chip-ID read (rejects implausible values).
+  init   : open, then bringup.cold_bringup (the byte-for-byte-verified two-cycle cold init).
+  beacon : init, then for each 2.4 GHz channel set_channel_bw + open monitor RCR + a synchronous
+           bulk-IN loop, counting beacons per channel. Confirms 2.4 GHz monitor RX works.
+
+Usage (card plugged in, WinUSB-bound via Zadig on Windows):
+    uv run python scripts/chips/rtl8822bu_dkms/test_hw.py --phase init
+    uv run python scripts/chips/rtl8822bu_dkms/test_hw.py --phase beacon --dwell 2.5
+    uv run python scripts/chips/rtl8822bu_dkms/test_hw.py --phase beacon --channel 6 --dwell 15
+"""
+from __future__ import annotations
+
+import argparse
+import logging
+import sys
+import time
+from collections import Counter
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).parent.parent.parent.parent / "src"))
+
+import libusb_package
+import usb.core
+import usb.util
+
+from airscope.chips.rtl8822bu_dkms import (
+    SUPPORTED_IDS, bb, bringup, chan, chipid, dm_watchdog, mac, rx, sipi, txpower,
+)
+from airscope.chips.rtl8822bu_dkms.transport import Rtl8822buTransport
+from airscope.dot11.parser import WlanFrameParser
+
+CHANNELS_2G = list(range(1, 14))
+
+
+def _fail(msg: str) -> int:
+    print(f"[FAIL] {msg}")
+    return 1
+
+
+def _open_device():
+    backend = libusb_package.get_libusb1_backend()
+    for entry in SUPPORTED_IDS:
+        dev = usb.core.find(idVendor=entry.vid, idProduct=entry.pid, backend=backend)
+        if dev is None:
+            continue
+        print(f"[*] Found RTL8822BU {entry.vid:04x}:{entry.pid:04x} at bus {dev.bus}, address {dev.address}")
+        break
+    else:
+        ids = ", ".join(f"{entry.vid:04x}:{entry.pid:04x}" for entry in SUPPORTED_IDS)
+        print(f"[FAIL] RTL8822BU not found ({ids}). Plug it in, confirm it is userland-bound.")
+        return None
+    try:
+        if dev.is_kernel_driver_active(0):
+            dev.detach_kernel_driver(0)
+    except (NotImplementedError, usb.core.USBError):
+        pass
+    try:
+        dev.set_configuration()
+    except usb.core.USBError as e:
+        logging.debug("set_configuration: %s", e)
+    return dev
+
+
+def _force_igi(t, igi: int) -> None:
+    """Override RX gain (IGI [6:0]) on both paths — bypasses the dig_init seed for the DIG test."""
+    for reg in (0x0C50, 0x0E50):
+        v = t.read32(reg)
+        t.write32(reg, (v & ~0x7F) | (igi & 0x7F))
+
+
+def _rnd8(x):
+    return (x + 7) & ~7
+
+
+def _rx_descriptor_stats(buf, acc):
+    """Walk the aggregated bulk-IN buffer WITHOUT iter_frames' good-frame filter, tallying each
+    24-byte rx_pkt_desc by category. Settles WHY 0 frames parse from real bytes: are they genuinely
+    crc_err/icv_err (BB demods but the bits are corrupt -> cal), c2h reports, or is the walk
+    mis-aligned (garbage pkt_len -> decode bug, not CRC)?"""
+    off, n = 0, len(buf)
+    while off + 24 <= n:
+        w0 = int.from_bytes(buf[off:off + 4], "little")
+        pkt_len = w0 & 0x3FFF
+        crc_err = (w0 >> 14) & 1
+        icv_err = (w0 >> 15) & 1
+        drvinfo_sz = ((w0 >> 16) & 0xF) << 3
+        shift_sz = (w0 >> 24) & 0x3
+        physt = (w0 >> 26) & 1
+        c2h = (int.from_bytes(buf[off + 8:off + 12], "little") >> 28) & 1
+        if pkt_len <= 0:
+            acc["zero_len"] += 1
+            break
+        pkt_offset = 24 + drvinfo_sz + shift_sz + pkt_len
+        if pkt_offset > n - off:
+            acc["truncated"] += 1
+            break
+        acc["pkts"] += 1
+        cat = ("c2h" if c2h else "crc_err" if crc_err else "icv_err" if icv_err
+               else "runt" if pkt_len <= 4 else "good")
+        acc[cat] += 1
+        if len(acc["samples"]) < 8:
+            phy = buf[off + 24:off + 24 + drvinfo_sz] if physt else b""
+            rssi = rx._decode_rssi(phy) if phy else "?"
+            acc["samples"].append(
+                f"len={pkt_len:>4} crc={crc_err} icv={icv_err} c2h={c2h} drv={drvinfo_sz} "
+                f"sh={shift_sz} physt={physt} rssi={rssi}  phy={phy[:8].hex()}")
+        off += _rnd8(pkt_offset)
+
+
+class _TxagcCapture:
+    def __init__(self):
+        self.writes = {}
+
+    def write32(self, addr: int, value: int) -> None:
+        self.writes[addr] = value & 0xFFFFFFFF
+
+
+def _expected_txagc(channel: int, pg) -> dict[int, int]:
+    cap = _TxagcCapture()
+    txpower.set_tx_power_level(cap, channel, pg)
+    return cap.writes
+
+
+def _expect_reg(name: str, got: int, expect: int, mask: int = 0xFFFFFFFF) -> None:
+    got_m = got & mask
+    expect_m = expect & mask
+    print(f"  {name} = 0x{got_m:08x}  expect 0x{expect_m:08x}")
+    if got_m != expect_m:
+        raise RuntimeError(f"{name}: got 0x{got_m:08x}, expected 0x{expect_m:08x}")
+
+
+def _verify_rfe_type2_registers(t, channel: int) -> None:
+    is_2g = channel <= 14
+    expect_cca = (
+        (0x75C97010, 0x79A0EAAC, 0x87746341, 0x705770, 0x57)
+        if is_2g else
+        (0x75B76010, 0x79A0EAAA, 0x87766431, 0x177517, 0x75)
+    )
+    reg82c, reg830, reg838, src, cb4 = expect_cca
+    _expect_reg("RFE2 CCA 0x082c", t.read32(0x082C), reg82c)
+    _expect_reg("RFE2 CCA 0x0830", t.read32(0x0830), reg830)
+    _expect_reg("RFE2 CCA 0x0838", t.read32(0x0838), reg838)
+    if not is_2g:
+        _expect_reg("RFE2 eFEM 0x083c", t.read32(0x083C), 0x9194B2B9)
+    _expect_reg("RFE2 src A 0x0cb0", t.read32(0x0CB0), src, 0x00FFFFFF)
+    _expect_reg("RFE2 src B 0x0eb0", t.read32(0x0EB0), src, 0x00FFFFFF)
+    _expect_reg("RFE2 cb4 A", t.read32(0x0CB4), cb4 << 8, 0x0000FF00)
+    _expect_reg("RFE2 cb4 B", t.read32(0x0EB4), cb4 << 8, 0x0000FF00)
+    _expect_reg("RFE2 ant A 0x0ca0", t.read32(0x0CA0), 0xA501, 0x0000FFFF)
+    _expect_reg("RFE2 ant B 0x0ea0", t.read32(0x0EA0), 0xA501, 0x0000FFFF)
+    _expect_reg("RFE2 RxHP 0x08cc", t.read32(0x08CC), 0x08108000)
+    _expect_reg("RFE2 RxHP 0x08d8[27]", t.read32(0x08D8), 0x00000000, 1 << 27)
+
+
+def _set_channel_verify_txagc(t, channel: int, prev_ch: int | None, txpwr_pg, rfe_type: int | None = None):
+    expected = _expected_txagc(channel, txpwr_pg) if txpwr_pg is not None else {}
+    actual = {}
+    write32 = t.write32
+
+    def capture_write32(addr: int, value: int) -> None:
+        if addr in expected:
+            actual[addr] = value & 0xFFFFFFFF
+        write32(addr, value)
+
+    t.write32 = capture_write32
+    try:
+        chan.set_channel_bw(t, channel, prev_ch=prev_ch, txpwr_pg=txpwr_pg, rfe_type=rfe_type or 3)
+    finally:
+        t.write32 = write32
+
+    if rfe_type == 2:
+        _verify_rfe_type2_registers(t, channel)
+    for addr, expect in sorted(expected.items()):
+        got = actual.get(addr)
+        got_s = f"0x{got:08x}" if got is not None else "<missing>"
+        print(f"  TXAGC[0x{addr:04x}] write {got_s}  expect 0x{expect:08x}")
+        if got != expect:
+            raise RuntimeError(f"TXAGC 0x{addr:04x}: wrote {got!r}, expected 0x{expect:08x}")
+
+
+def _rxstats(t, channel, dwell, rcr, txpwr_pg=None, rfe_type=None):
+    """Diagnostic: monitor-enable (+optional RCR override) + tune, then a dwell tallying rx_pkt_desc
+    categories instead of parsing frames. Reveals whether real RX bytes are crc_err vs a decode gap."""
+    mac.enable_monitor(t)
+    if rcr is not None:
+        t.write32(0x0608, int(rcr, 0))
+    _set_channel_verify_txagc(t, channel, prev_ch=None, txpwr_pg=txpwr_pg, rfe_type=rfe_type)
+    # Read back RF reg 0x18 (the channel/BW reg) on both paths: confirm the retune actually moved the
+    # synth to `channel`. RF_0x18[7:0] = channel number; [11:10] = BW (0b11 = 20 MHz).
+    rf18_a = sipi.read_rf_reg(t, sipi.RF_PATH_A, 0x18)
+    rf18_b = sipi.read_rf_reg(t, sipi.RF_PATH_B, 0x18)
+    print(f"  RF_0x18 after tune: A=0x{rf18_a:05x} (ch={rf18_a & 0xFF}), "
+          f"B=0x{rf18_b:05x} (ch={rf18_b & 0xFF})  [requested ch {channel}]")
+    acc = {k: 0 for k in ("pkts", "good", "crc_err", "icv_err", "c2h", "runt",
+                          "zero_len", "truncated")}
+    acc["samples"] = []
+    bufs = nbytes = 0
+    start = time.monotonic()
+    while time.monotonic() - start < dwell:
+        buf = t.bulk_in()
+        if not buf:
+            continue
+        bufs += 1
+        nbytes += len(buf)
+        _rx_descriptor_stats(buf, acc)
+    print(f"\n[RXSTATS] ch {channel}, {dwell:g}s: {bufs} bufs / {nbytes} B, {acc['pkts']} packets")
+    print(f"  good={acc['good']}  crc_err={acc['crc_err']}  icv_err={acc['icv_err']}  "
+          f"c2h={acc['c2h']}  runt={acc['runt']}  zero_len={acc['zero_len']}  "
+          f"truncated={acc['truncated']}")
+    print("  first packets (decoded rx_pkt_desc):")
+    for s in acc["samples"]:
+        print(f"    {s}")
+    if acc["good"]:
+        print("  => GOOD frames present: the decode/CRC is fine; iter_frames should yield these.")
+    elif acc["crc_err"] or acc["icv_err"]:
+        print("  => all crc/icv-err: BB demods but bits are corrupt -> RF/BB cal accuracy.")
+    else:
+        print("  => no good frames and no crc/icv: walk likely mis-aligned -> decode bug, not CRC.")
+
+
+def _dwell_count(t, dwell, rssi, total, wd=None):
+    """One dwell window: bulk-IN loop, tally beacons. If `wd` (a DigState) is set, tick the PHYDM
+    watchdog every ~2 s to adapt RX gain. Returns (beacons, bufs, bytes, frames, total)."""
+    beacons: Counter = Counter()
+    raw_bytes = raw_bufs = ch_frames = 0
+    start = last_wd = time.monotonic()
+    while time.monotonic() - start < dwell:
+        if wd is not None and time.monotonic() - last_wd >= 2.0:
+            dm_watchdog.phydm_watchdog(t, wd)        # runtime IGI/CCK-PD/EDCCA adaptation
+            last_wd = time.monotonic()
+        buf = t.bulk_in()
+        if not buf:
+            continue
+        raw_bufs += 1
+        raw_bytes += len(buf)
+        for frame, r in rx.iter_frames(buf):
+            total += 1
+            ch_frames += 1
+            parsed = WlanFrameParser.parse_80211_frame(frame, r)
+            if not parsed or parsed.type != "beacon":
+                continue
+            b = (parsed.bssid or "").lower()
+            if not b or b == "ff:ff:ff:ff:ff:ff":
+                continue
+            beacons[b] += 1
+            if r and (b not in rssi or r > rssi[b]):
+                rssi[b] = r
+    return beacons, raw_bufs, raw_bytes, ch_frames, total
+
+
+def _watch(t, channels, dwell: float, prev_ch, igi=None, rcr=None, watchdog=False, cckpd=None,
+           txpwr_pg=None, rfe_type=None):
+    """Tune each channel, then a bulk-IN loop for `dwell` s; tally beacons. `igi` forces RX gain to a
+    hex value or sweeps a range (DIG-watchdog hypothesis test); `rcr` overrides the monitor RCR;
+    `watchdog` runs the runtime PHYDM watchdog (live IGI adaptation) every ~2 s. rx-dma bytes vs parsed
+    frames split "no bytes off USB" (RX-DMA gap) from "bytes but no good frames"."""
+    per_ch: dict[int, Counter] = {}
+    rssi: dict[str, int] = {}
+    total = 0
+    igis = ([None] if not igi
+            else [0x1C, 0x24, 0x2C, 0x34, 0x3C, 0x44] if igi == "sweep" else [int(igi, 0)])
+    mac.enable_monitor(t)                          # airmon monitor RX-enable (once)
+    if rcr is not None:
+        t.write32(0x0608, int(rcr, 0))             # diagnostic RCR override (e.g. accept CRC/ICV errors)
+    wd = None
+    if watchdog:
+        wd = dm_watchdog.DigState(cur_ig_value=sipi.get_bb_reg(t, 0x0C50, 0x7F),
+                                  cck_new_agc=bool(sipi.get_bb_reg(t, 0x0A9C, 1 << 17)))
+    for ch in channels:
+        _set_channel_verify_txagc(t, ch, prev_ch=prev_ch, txpwr_pg=txpwr_pg, rfe_type=rfe_type)
+        if cckpd is not None:
+            t.write8(0x0A0A, int(cckpd, 0))        # force CCK PD threshold (0x40 sensitive .. 0x83 LV_1)
+        prev_ch = ch
+        for g in igis:
+            if g is not None:
+                _force_igi(t, g)
+            beacons, bufs, nbytes, frames, total = _dwell_count(t, dwell / len(igis), rssi, total, wd=wd)
+            per_ch[ch] = per_ch.get(ch, Counter()) + beacons
+            tag = f" IGI=0x{g:02x}" if g is not None else ""
+            print(f"    ch {ch:>3}{tag}: {len(beacons):>2} APs, {sum(beacons.values()):>4} beacons  "
+                  f"[rx-dma {bufs} bufs / {nbytes} B, {frames} frames]")
+    return per_ch, rssi, total
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--phase", choices=("open", "init", "beacon"), default="beacon")
+    ap.add_argument("--channel", type=int, default=None, help="single channel (default: hop 1-13)")
+    ap.add_argument("--dwell", type=float, default=2.5, help="seconds per channel")
+    ap.add_argument("--igi", default=None,
+                    help="force RX gain IGI to a hex value (0x30) or 'sweep' (try a range). "
+                         "Tests the DIG-watchdog hypothesis: without the runtime DIG, IGI is frozen "
+                         "at the dig_init seed, which may be too low (saturating FA -> no demod).")
+    ap.add_argument("--rcr", default=None,
+                    help="override the monitor RCR after enable_monitor (hex, e.g. 0x90000301 to "
+                         "ACCEPT CRC/ICV-error frames). Diagnostic: if bytes arrive only with errors "
+                         "accepted, the BB demods but the CRC fails (RF/BB offset), not an RX-DMA gap.")
+    ap.add_argument("--rxstats", type=int, default=None, metavar="CH",
+                    help="diagnostic: tally rx_pkt_desc categories (good/crc_err/icv_err/c2h) on CH "
+                         "instead of parsing frames. Pair with --rcr 0x90000301 to DMA error frames. "
+                         "Tells crc_err-cal-issue apart from a descriptor-decode/alignment bug.")
+    ap.add_argument("--cckpd", default=None,
+                    help="force the CCK packet-detection threshold 0xA0A (hex) after each tune. "
+                         "0x40 = sensitive (LV_0), 0x83 = the LV_1 seed. Tests the 2.4 GHz CCK-RX bug: "
+                         "if 2.4 GHz CCK beacons jump with --cckpd 0x40, the PD threshold is the cause.")
+    ap.add_argument("--watchdog", action="store_true",
+                    help="run the runtime PHYDM watchdog (live IGI/CCK-PD/EDCCA adaptation) every ~2s "
+                         "during the dwell — A/B the beacon rate against the frozen dig_init seed.")
+    ap.add_argument("--debug", action="store_true")
+    args = ap.parse_args()
+    logging.basicConfig(
+        level=logging.DEBUG if args.debug else logging.INFO,
+        format="%(asctime)s.%(msecs)03d [%(levelname)-5s] %(name)s: %(message)s", datefmt="%H:%M:%S")
+
+    dev = _open_device()
+    if dev is None:
+        return 1
+    try:
+        usb.util.claim_interface(dev, 0)
+    except usb.core.USBError as e:
+        return _fail(f"claim_interface(0): {e}  (a running airscope may hold the card)")
+
+    t = Rtl8822buTransport(dev)
+    try:
+        info = chipid.get_chip_info(t)
+        print(f"  chip_ver (cut) = {info.chip_ver}")
+        if args.phase == "open":
+            print("[PASS] control-transfer plumbing works.")
+            return 0
+
+        print("[*] running cold bring-up (two-cycle init: chip-ID/EFUSE/FW/MAC/BB/RF)...")
+        _, e = bringup.cold_bringup(t)
+        print("  EFUSE: "
+              f"autoload_fail={int(e.autoload_fail)} rfe_type={e.rfe_type} crystal_cap=0x{e.crystal_cap:02x} "
+              f"thermal=0x{e.thermal_meter:02x} id_valid={int(e.eeprom_id_valid)} "
+              f"usb_switch={int(e.usb_mode_switch)} eeprom_vidpid={e.eeprom_vid:04x}:{e.eeprom_pid:04x} "
+              f"regulatory={e.regulatory} interface={e.interface_sel} "
+              f"bt_raw={int(e.bt_coexist_raw)} bt_coexist={int(e.bt_coexist)} "
+              f"bt_ant={2 if e.bt_ant_num else 1} "
+              f"bt_path={'B' if e.bt_ant_path else 'A'} board_type=0x{e.board_type:02x} "
+              f"pa_lna=2g:{int(e.external_pa_2g)}/{int(e.external_lna_2g)} "
+              f"5g:{int(e.external_pa_5g)}/{int(e.external_lna_5g)} "
+              f"type=gpa{e.type_gpa}/apa{e.type_apa}/glna{e.type_glna}/alna{e.type_alna} "
+              f"mac={e.mac_address or '<none>'}")
+        afe1 = t.read32(bb.REG_AFE_CTRL1)
+        afe2 = t.read32(bb.REG_AFE_CTRL2)
+        cap1 = (afe1 & bb.XTAL_CAP_MASK_24) >> 25
+        cap2 = (afe2 & bb.XTAL_CAP_MASK_28) >> 1
+        print(f"  REG 0x24 xtal={cap1:#04x}, REG 0x28 xtal={cap2:#04x} (expect 0x{e.crystal_cap & 0x3f:02x})")
+        if cap1 != (e.crystal_cap & 0x3F) or cap2 != (e.crystal_cap & 0x3F):
+            return _fail("crystal-cap register fields do not match EFUSE")
+        print("[PASS] cold init complete (no bus errors).")
+        if args.phase == "init":
+            return 0
+
+        txpwr_pg = txpower.parse_pg(e.log_map)
+        if args.rxstats is not None:
+            _rxstats(t, args.rxstats, args.dwell, args.rcr, txpwr_pg=txpwr_pg, rfe_type=e.rfe_type)
+            return 0
+
+        channels = [args.channel] if args.channel else CHANNELS_2G
+        dwell = args.dwell if args.channel else args.dwell
+        igi_note = f", IGI={args.igi}" if args.igi else ""
+        print(f"[*] monitor RX: {'channel ' + str(args.channel) if args.channel else 'hop 1-13'}, "
+              f"{dwell:g}s/ch{igi_note}...")
+        per_ch, rssi, frames = _watch(t, channels, dwell, prev_ch=None, igi=args.igi, rcr=args.rcr,
+                                      watchdog=args.watchdog, cckpd=args.cckpd, txpwr_pg=txpwr_pg,
+                                      rfe_type=e.rfe_type)
+
+        allb: Counter = Counter()
+        for c in per_ch.values():
+            allb.update(c)
+        total = sum(allb.values())
+        print(f"\n[RESULT] {len(allb)} unique APs, {total} beacons total, {frames} frames seen")
+        for b, n in allb.most_common(20):
+            print(f"    {b}  {n:>4}  {rssi.get(b, '?')} dBm")
+        if not allb:
+            return _fail("no beacons heard — RX path not delivering frames "
+                         "(check RCR / RX-DMA / AGC gain).")
+        print("[PASS] 2.4 GHz monitor RX hears beacons.")
+        return 0
+    finally:
+        try:
+            usb.util.release_interface(dev, 0)
+            usb.util.dispose_resources(dev)
+        except usb.core.USBError as e:
+            print(f"  (release warning: {e})")
+
+
+if __name__ == "__main__":
+    sys.exit(main())

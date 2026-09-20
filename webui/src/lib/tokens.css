@@ -1,0 +1,25 @@
+/* GENERATED from airscope.tokens.NOIR - do not hand-edit. */
+:root {
+  --primary: #7df0c4;
+  --secondary: #5ac8fa;
+  --accent: #ffb454;
+  --foreground: #d6dce5;
+  --background: #0a0e14;
+  --success: #7df0c4;
+  --warning: #ffb454;
+  --error: #ff6b6b;
+  --surface: #11161f;
+  --panel: #161d29;
+  --muted: #5b6472;
+  --attack: #c792ea;
+  --track: #232b3a;
+  --logo-bars-primary: #7df0c4;
+  --logo-bars-secondary: #2a7a5c;
+  --logo-text-primary: #e8edf3;
+  --logo-text-secondary: #5b6472;
+  --cursor: #7df0c4;
+  --cursor-blurred: #2a3a4a;
+  --hover: #1b2534;
+  --input-selection: #23404a;
+  --screen-selection: #1f4a3f;
+}

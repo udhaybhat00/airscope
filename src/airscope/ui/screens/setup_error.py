@@ -1,0 +1,62 @@
+"""Modal shown when a device-setup action fails (WinUSB install/restore).
+
+Renders a title, message, warning-styled ``action`` line, and muted ``details`` line.
+Dismisses with ``None``; the caller just awaits it for acknowledgement.
+"""
+from __future__ import annotations
+
+from textual.app import ComposeResult
+from textual.binding import Binding
+from textual.containers import Horizontal, Vertical
+from textual.screen import ModalScreen
+from textual.widgets import Button, Label
+
+
+class SetupErrorDialog(ModalScreen[None]):
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=True),
+        Binding("enter", "close", "Close", show=True, priority=True),
+    ]
+
+    DEFAULT_CSS = """
+    SetupErrorDialog { align: center middle; }
+    SetupErrorDialog #dialog {
+        width: 72; height: auto; max-width: 90%;
+        border: thick $error; background: $surface; padding: 1 2;
+    }
+    SetupErrorDialog #title {
+        width: 100%; content-align: center middle; margin-bottom: 1;
+        text-style: bold; color: $error;
+    }
+    SetupErrorDialog #message { width: 100%; margin-bottom: 1; }
+    SetupErrorDialog #action {
+        width: 100%; margin-bottom: 1; text-style: bold; color: $text-warning;
+    }
+    SetupErrorDialog #details { width: 100%; color: $text-muted; margin-bottom: 1; }
+    SetupErrorDialog #button-row { height: auto; align: center middle; }
+    """
+
+    def __init__(self, title: str, message: str, details: str | None = None,
+                 *, action: str | None = None) -> None:
+        super().__init__()
+        self._title = title
+        self._message = message
+        self._details = details
+        self._action = action
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="dialog"):
+            yield Label(self._title, id="title")
+            yield Label(self._message, id="message")
+            if self._action:
+                yield Label(self._action, id="action")
+            if self._details:
+                yield Label(self._details, id="details")
+            with Horizontal(id="button-row"):
+                yield Button("Close", variant="primary", id="btn-close")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)

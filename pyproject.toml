@@ -1,0 +1,79 @@
+[project]
+name = "airscope"
+dynamic = ["version"]
+description = "Wireless Auditor TUI"
+readme = "README.md"
+license = "GPL-2.0-only"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+dependencies = [
+    "libusb-package>=1.0.26.3",
+    "platformdirs",
+    "pyusb>=1.3.1",
+    "rich",
+    "textual",
+]
+
+[project.scripts]
+airscope = "airscope.__main__:main"
+
+[project.optional-dependencies]
+web = [
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.30",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+# Version lives in src/airscope/__init__.py (__version__); hatchling reads it at build time so
+# there is one source of truth. The release workflow's tag-gate reads the same literal.
+[tool.hatch.version]
+path = "src/airscope/__init__.py"
+
+[dependency-groups]
+dev = [
+    "pillow>=12.3.0",
+    "pyinstaller>=6.21.0",
+    "pyshark>=0.6",
+    "pytest",
+    "pytest-asyncio",
+    "pytest-mock",
+    "ruff",
+    "textual-dev",
+]
+
+[tool.ruff]
+# This codebase is hand-formatted (~99-col, multi-per-line collections) and is NOT
+# `ruff format`-clean. Running `ruff format` reflows the whole tree at the default 88-col +
+# magic-trailing-comma, turning every uncommitted change into a needle in a haystack. So the
+# FORMATTER is disabled repo-wide: with force-exclude honouring the exclude even for explicitly
+# passed paths, `ruff format` is a no-op here. Use `ruff check` (lint) only — it is unaffected
+# (format.exclude does not apply to the linter). To adopt the formatter later, delete the
+# format.exclude and reflow the entire tree in one dedicated commit.
+force-exclude = true
+
+[tool.ruff.format]
+exclude = ["**/*.py"]
+
+[tool.ruff.lint]
+# Pin the enforced rules to ruff's long-standing default (pyflakes + core pycodestyle).
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+# Scripts prepend sys.path (src/ + sibling helpers) before importing, so those imports sit
+# below the top of the file on purpose. Silence E402 here instead of a per-line # noqa on each.
+"scripts/**" = ["E402"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+asyncio_default_fixture_loop_scope = "function"
+testpaths = ["tests"]
+pythonpath = ["src"]
+# `-m 'not slow'` deselects the @pytest.mark.slow tests on every run.
+# Opt in with `uv run pytest -m slow`; run everything with `uv run pytest -m 'slow or not slow'`.
+addopts = "--import-mode=importlib -m 'not slow'"
+markers = [
+    "slow: heavyweight end-to-end WEP crypto proof; deselected by default (see addopts).",
+]

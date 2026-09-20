@@ -1,0 +1,54 @@
+name: Bug report
+description: Crashes, errors, or incorrect behavior in airscope.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: >-
+        What did you do, what did you expect, and what happened instead? Screenshots can help.
+      placeholder: On the scanner with the RTL8812AU, channel hopping stops after ~30s and no new APs show up…
+    validations:
+      required: true
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Linux
+        - MacOS
+        - Windows
+    validations:
+      required: true
+  - type: input
+    id: os-version
+    attributes:
+      label: OS / kernel version
+      description: "Linux/MacOS: paste the output of `uname -a`. Windows: edition + build (run `winver`, e.g. Windows 11 Home 24H2 build 26200)."
+      placeholder: "Linux kali 6.8.0-kali3-amd64 … x86_64 GNU/Linux  —or—  Windows 11 Home 24H2 build 26200"
+    validations:
+      required: true
+  - type: input
+    id: device
+    attributes:
+      label: USB Device
+      description: Make and Model of your USB device(s).
+      placeholder: ALFA AWUS036NHA
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: airscope version
+      description: "The release version shown in the app title (e.g. 'airscope - v0.3.11'), or if you're running from source, the git short hash (`git rev-parse --short HEAD`)."
+      placeholder: "v0.3.11  —or—  a1b2c3d"
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Output / logs
+      description: Paste the relevant airscope.log output or error text.
+      render: text

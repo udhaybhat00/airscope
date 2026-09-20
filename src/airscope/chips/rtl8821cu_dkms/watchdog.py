@@ -1,0 +1,459 @@
+"""RTL8821CU phydm dynamic-check watchdog tick — the third async producer of the operational phase.
+
+The ~2 s dynamic-check work [SRC] core/rtw_cmd.c:2992 rtw_dynamic_chk_wk_hdl:
+  sreset xmit/linked status checks (DBG_CONFIG_ERROR_DETECT) [SRC] rtl8821c_ops.c:574/672
+  dm_DynamicUsbTxAgg -> the 8821CU rx-agg reconfig [SRC] hal_com.c:14891 -> rtl8821cu_ops.c:47
+                       -> cfg_usb_rx_agg_88xx [SRC] halmac_usb_88xx.c:88
+  rtw_hal_dm_watchdog -> phydm_watchdog [SRC] phydm.c:2382
+
+Only the members that touch the wire for the CE + CONFIG_RTL8821C build in monitor / no-link mode
+are ported, in wire order. The silent / #if'd-out members are catalogued in RTL8821CU_DKMS.md. The
+tick interleaves with the channel hops + LED blink in the operational phase and is dispatched by its
+unique opener (read REG_TXDMA_STATUS 0x0210).
+
+A note the gate forced out: the IGI lives at 0xC50 (read 0x20 at init); 0x09A4 is the OFDM-FA reset
+control (its low byte is unrelated to IGI). So DIG, with cur_ig_value = 0x20 and the no-link FA in
+the hold band, computes no change and writes nothing — matching the wire.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
+from .bb import set_bb_reg
+from .dm import (_b2d, _get_bb_dbg_port_val, _nhm_th_background, _release_bb_dbg_port,
+                 _set_bb_dbg_port, get_bb_reg)
+from .rf import read_rf
+
+# --- sreset status checks [SRC] rtl8821c_ops.c -----------------------------
+_REG_TXDMA_STATUS = 0x0210      # xmit_status_check :583 (==0 -> no reset)
+_REG_RXDMA_STATUS = 0x0288      # linked_status_check :679
+_REG_RXFF_PTR_V1 = 0x1118       # check_rx_count :644 (16-bit)
+
+# --- USB rx-agg reconfig [SRC] halmac_usb_88xx.c:88 cfg_usb_rx_agg_88xx ------
+_REG_TXDMA_PQ_MAP = 0x010C      # agg_enable byte
+_REG_RXDMA_AGG_PG_TH = 0x0280   # [3]=dma_usb_agg ; word = size | timeout<<8
+_BIT_EN_PRE_CALC = 1 << 29      # BIT_EN_PRE_CALC (size_limit_en) [SRC] halmac_bit_8821c.h:6346
+_BIT_RXDMA_AGG_EN = 1 << 2      # USB-mode agg enable on 0x10c
+_BIT_DMA_USB_AGG = 1 << 7       # USB-mode bit on 0x283
+# low-traffic (monitor) agg params: size 0, timeout 1 [SRC] rtl8821cu_ops.c:49-52
+_RXAGG_SIZE, _RXAGG_TIMEOUT = 0x00, 0x01
+
+_REG_RCR = 0x0608               # hw_var_rcr_get read interleaved into the tick (not watchdog state)
+
+# --- phydm_false_alarm_counter_statistics (AC) [SRC] phydm_dig.c:1726 --------
+# OFDM-FA TYPE1..6, OFDM-FA count, CCK-FA count, CCA + CRC32 counters — read in this order.
+_FA_READ_SEQ = (0x0FCC, 0x0FD0, 0x0FBC, 0x0FC0, 0x0FC4, 0x0FC8, 0x0F48, 0x0A5C,
+                0x0F08, 0x0F04, 0x0F14, 0x0F1C, 0x0F10, 0x0F18, 0x0F0C, 0x0F54)
+_REG_OFDM_FA = 0x0F48           # cnt_ofdm_fail = [15:0]
+_REG_CCK_FA = 0x0A5C            # cnt_cck_fail = [15:0]  (ODM_REG_CCK_FA_11AC)
+_REG_BB_RX_PATH = 0x0808        # cck_enable = BIT28
+_CCK_ENABLE = 1 << 28
+_ADAPTIVITY_DBG_PORT = 0x209    # the EDCCA-flag dbg port read after dbg port 0x0
+
+# --- FA-counter reset [SRC] phydm_dig.c:1572 + phydm_api.c:69 ----------------
+_REG_OFDM_FA_RST = 0x09A4       # BIT17 set->clear resets OFDM FA
+_REG_CCK_FA_RST = 0x0A2C        # BIT15 set resets CCK FA
+_REG_BB_HW_CNT_RST = 0x0B58     # BIT0 set->clear resets the page-F counters
+# crc32-cnt2-rate (first tick only; *_rate_idx start 0) [SRC] phydm_dig.c:1902
+_REG_CRC32_CNT2_RATE = 0x0B04
+_SPEC_RATE_6M = 0xB             # PHYDM_SPEC_RATE_6M [SRC] phydm_pre_define.h:316
+
+# --- DIG [SRC] phydm_dig.c:1336 / :1205 -------------------------------------
+_REG_IGI_A = 0x0C50             # ODM_REG_IGI_A_11AC ([6:0] = IGI)
+_DIG_MIN, _DIG_MAX_OF_MIN = 0x1C, 0x2A      # no-link rx_gain_range_min / max
+_FA_TH = (2000, 4000, 5000)                 # no-link non-DFS FA thresholds [SRC] :226-230
+
+# --- CCK-PD type2 [SRC] phydm_cck_pd.c:1617 / :319 / :170 / :156 ------------
+_REG_CCK_N_RX = 0x0A2C          # cck_n_rx = (BIT18 && BIT22) ? 2 : 1 (r_mrx / r_cca_mrc)
+_REG_CCK_PD_TH = 0x0A08         # [21:16] = pd_th
+_REG_CCK_CS_RATIO = 0x0AA8      # [20:16] = cs_ratio
+_CCK_PD_LV0, _CCK_PD_LV1 = 0, 1
+_CCK_FA_MA_RESET = 0xFFFFFFFF
+# lv -> (cs_ratio add, 2R cs offset, pd_th) [SRC] phydm_set_cckpd_lv_type2 (no-link reaches LV0/LV1)
+_CCKPD_LV2_PARAMS = {0: (0, 0, 0x3), 1: (2, 1, 0x7), 2: (4, 3, 0xD), 3: (6, 4, 0xD), 4: (8, 5, 0xD)}
+
+# --- adaptivity EDCCA [SRC] phydm_adaptivity.c:203 (NORMAL mode) -------------
+_REG_EDCCA = 0x08A4             # byte0 = L2H, byte1 = H2L
+_TH_L2H_DIFF_IGI, _EDCCA_TH_L2H_LB, _EDCCA_HL_DIFF_NORMAL = 8, 48, 8
+
+_REG_RRSR = 0x0440              # rtw_phydm_set_rrsr re-set (interleaved); rrsr_val_init 0x15d
+_RRSR_VAL_INIT = 0x15D
+
+# --- halrf thermal (tx-power tracking) [SRC] halrf_powertracking_ce.c:818 ----
+# A 2-phase trigger toggled by tm_trigger each callback: ARM (read meter, set RF 0x42[17:16]=3)
+# then, the next tick, CALLBACK (read the now-settled meter, run odm_pwrtrk_method). [SRC] :836/873.
+_REG_RF_T_METER = 0x42          # RF reg 0x42 (= BB 0x2908); ARM sets [17:16]=3, CALLBACK reads [15:10]
+_RF_T_METER_TRIG = 0x3
+_THERMAL_FIELD = 0xFC00         # meter value = RF 0x42[15:10]  [SRC] halphyrf_ce.c:462
+_REG_OFDM_TX_AGC = 0x0C94       # set_pwr8821c: [6:1] = absolute_ofdm_swing_idx & 0x3f  [SRC] halrf_8821c.c:221
+_REG_OFDM_BB_SWING = 0x0C1C     # [31:21] = tx_scaling_table_jaguar[bb_swing_idx_ofdm]  [SRC] :222
+_AVG_THERMAL_NUM = 4            # AVG_THERMAL_NUM_8821C [SRC] halrf_8821c.h:19
+_TXPWR_TRACK_TABLE_MAX = 29     # TXPWR_TRACK_TABLE_SIZE-1 clamp [SRC] halrf_powertracking_ce.h:40
+# delta-swing index tables, path-A [SRC] halhwimg8821c_rf.c (rfe-invariant). 2.4 GHz is one table;
+# 5 GHz has three sub-bands (band-1 36-64 / band-2 100-144 / band-3 149-177) [SRC] :2784/2793.
+_DELTA_SWING_2GA_N = (0, 0, 0, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 3, 4,
+                      4, 4, 4, 5, 5, 5, 5, 6, 6, 6, 7, 7, 8, 8, 9)
+_DELTA_SWING_2GA_P = (0, 1, 1, 1, 1, 2, 2, 2, 3, 3, 3, 3, 4, 4, 5,
+                      5, 5, 5, 6, 6, 6, 7, 7, 7, 8, 8, 9, 9, 9, 9)
+_DELTA_SWING_5GA_N = (
+    (0, 1, 1, 2, 3, 3, 3, 4, 4, 5, 5, 6, 6, 6, 7, 8, 8, 8, 9, 9, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12),
+    (0, 1, 1, 1, 2, 3, 3, 4, 4, 5, 5, 5, 6, 6, 7, 8, 8, 9, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12, 12),
+    (0, 1, 2, 2, 3, 4, 4, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12),
+)
+_DELTA_SWING_5GA_P = (
+    (0, 1, 1, 2, 2, 2, 3, 3, 4, 4, 5, 5, 6, 6, 7, 7, 8, 8, 9, 9, 10, 11, 11, 12, 12, 12, 12, 12, 12, 12),
+    (0, 1, 1, 2, 2, 3, 3, 4, 4, 5, 5, 5, 6, 7, 7, 8, 8, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12, 12, 12),
+    (0, 1, 1, 1, 2, 3, 3, 3, 4, 4, 4, 5, 6, 6, 7, 7, 8, 8, 9, 10, 10, 11, 11, 12, 12, 12, 12, 12, 12, 12),
+)
+
+
+def _delta_swing_tables(channel: int | None) -> tuple[tuple[int, ...], tuple[int, ...]]:
+    """get_delta_swing_table_8821c [SRC] halrf_8821c.c:239 — the (down, up) delta-swing tables for
+    the tune's band: the 2.4 GHz pair, or the 5 GHz sub-band pair (36-64 / 100-144 / 149-177)."""
+    if channel is None or channel <= 14:
+        return _DELTA_SWING_2GA_N, _DELTA_SWING_2GA_P
+    sub = 0 if channel <= 64 else 1 if channel <= 144 else 2
+    return _DELTA_SWING_5GA_N[sub], _DELTA_SWING_5GA_P[sub]
+
+# --- dyn-bw indication (bw-fixed) [SRC] phydm_api.c:800 ----------------------
+_REG_BW_FIXED = 0x0840          # [3:0]=pri-ch (20 MHz->0) ; BIT4 = bw-fixed enable
+
+# --- env-monitor NHM/CLM/FAHM [SRC] phydm_ccx.c:2338 phydm_env_mntr_watchdog -
+_REG_CCX_CTRL = 0x0994          # [0]=CLM trig [1]=NHM trig [2]=FAHM trig [11:8]=NHM incl [31:16]=th9/10
+_REG_CCX_PERIOD = 0x0990        # [31:16]=NHM period [15:0]=CLM period
+_REG_NHM_RDY = 0x0FB4           # NHM ready BIT16 (+ duration [15:0])
+_REG_NHM_RPT = (0x0FA8, 0x0FAC, 0x0FB0)     # NHM report words (read when ready)
+_REG_CLM_RDY = 0x0FA4           # CLM ready BIT16 (+ result [15:0])
+_REG_FAHM_RDY = 0x1F98          # FAHM ready BIT31 (+ denom [15:0])
+_REG_FAHM_RPT = 0x1F80          # FAHM report base (6 dwords)
+_REG_FAHM_CTRL = 0x1CF8         # FAHM period [23:8]
+_NHM_PERIOD_MAX, _CLM_PERIOD_MAX = 0xFFFE, 0xFFFF        # [SRC] phydm_ccx.h:43/45
+# NHM/FAHM set_th_reg targets (IGI-changed threshold recompute, mirrors dm._nhm_init/_fahm_init)
+_REG_NHM_TH0, _REG_NHM_TH4, _REG_NHM_TH8 = 0x0998, 0x099C, 0x09A0
+_REG_FAHM_TH0, _REG_FAHM_TH3, _REG_FAHM_TH6, _REG_FAHM_TH8 = 0x1C38, 0x1C78, 0x1C7C, 0x1CB8
+
+
+def _nhm_set_th(t, igi: int) -> None:
+    """phydm_nhm_set_th_reg (11AC) [SRC] phydm_ccx.c — the same BACKGROUND curve as `dm._nhm_init`,
+    rewritten when the live IGI moved (e.g. DIG dropped it on 5G)."""
+    th = _nhm_th_background(igi)
+    set_bb_reg(t, _REG_NHM_TH0, 0xFFFFFFFF, _b2d(th[3], th[2], th[1], th[0]))
+    set_bb_reg(t, _REG_NHM_TH4, 0xFFFFFFFF, _b2d(th[7], th[6], th[5], th[4]))
+    set_bb_reg(t, _REG_NHM_TH8, 0xFF, th[8])
+    set_bb_reg(t, _REG_CCX_CTRL, 0xFFFF0000, _b2d(0, 0, th[10], th[9]))
+
+
+def _fahm_set_th(t, igi: int) -> None:
+    """phydm_fahm_set_th_reg (AC) [SRC] phydm_ccx.c — the FAHM threshold rewrite on an IGI change."""
+    th = _nhm_th_background(igi)
+    set_bb_reg(t, _REG_FAHM_TH0, 0xFFFFFF00, _b2d(0, th[2], th[1], th[0]))
+    set_bb_reg(t, _REG_FAHM_TH3, 0xFFFFFF00, _b2d(0, th[5], th[4], th[3]))
+    set_bb_reg(t, _REG_FAHM_TH6, 0xFFFF0000, _b2d(0, 0, th[7], th[6]))
+    set_bb_reg(t, _REG_FAHM_TH8, 0xFFFFFF00, _b2d(0, th[10], th[9], th[8]))
+
+
+@dataclass
+class WatchdogState:
+    """phydm dynamic-mechanism state carried across ticks, seeded from the init `odm_dm_init`
+    (so the first tick starts from the right values). The replay supplies the chip read-backs;
+    these are the pure-software carried fields the chip does not re-encode in a read."""
+    cur_ig_value: int = 0x20            # DIG IGI, seeded from _dig_init's 0xC50 read
+    cck_pd_lv: int = _CCK_PD_LV1        # _cck_pd_init commits LV_1
+    cck_n_rx: int = 1                   # _set_cckpd_lv_type2 saved n_rx (1R card -> always 1)
+    cck_fa_ma: int = _CCK_FA_MA_RESET   # CCK-FA moving average (reset)
+    aaa_default: int = 0x0F             # _cck_pd_init: 0xAAA[4:0]
+    first_tick: bool = True             # crc32-cnt2-rate writes fire only while *_rate_idx==0
+    tm_trigger: bool = False            # halrf: init 0 -> first tick arms the thermal meter
+    # env-monitor carried state (seeded from phydm_env_monitor_init); IGI 0x20 so the th curves
+    # already match -> th writes suppressed. period/include fire on the first tick then suppress.
+    nhm_igi: int = 0x20
+    fahm_igi: int = 0x20
+    nhm_period: int = 0                 # init leaves NHM/FAHM period 0; CLM period 0xffff
+    fahm_period: int = 0
+    clm_period: int = _CLM_PERIOD_MAX
+    nhm_include_set: bool = False       # include fields at *_INIT sentinel until the first set
+    fahm_include_set: bool = False
+    # halrf thermal power-tracking (CALLBACK phase). eeprom_thermal/thermal_offset are seeded from
+    # EFUSE by the gate; the rest are the cali_info carried state (thermal_value init = eeprom).
+    eeprom_thermal: int = 0x12          # rf->eeprom_thermal (EFUSE 0xBA); delta base
+    thermal_offset: int = 0             # kfree thermal trim (EFUSE 0x1EF), added to the raw meter
+    thermal_value: int = -1             # last averaged meter; __post_init__ seeds it = eeprom_thermal
+    thermal_avg: list[int] = field(default_factory=lambda: [0] * _AVG_THERMAL_NUM)  # averaging ring
+    thermal_avg_idx: int = 0
+    ofdm_swing_idx: int = 0             # delta_power_index[A] = last applied OFDM swing index
+
+    def __post_init__(self) -> None:
+        if self.thermal_value < 0:      # cali_info->thermal_value seeds to eeprom_thermal [SRC] ce.c:712
+            self.thermal_value = self.eeprom_thermal
+
+
+# ======================================================================
+# member helpers (wire order)
+# ======================================================================
+def _sreset_check(t) -> None:
+    """rtw_hal_sreset_xmit/linked_status_check [SRC] rtl8821c_ops.c:574/672 — read the TX/RX DMA
+    status (0 -> no hang -> no reset) and the RX-FIFO pointer (check_rx_count)."""
+    t.read32(_REG_TXDMA_STATUS)
+    t.read32(_REG_RXDMA_STATUS)
+    t.read16(_REG_RXFF_PTR_V1)
+
+
+def _usb_rx_agg(t) -> None:
+    """cfg_usb_rx_agg_88xx (USB mode, low-traffic) [SRC] halmac_usb_88xx.c:88 — re-apply the RX-DMA
+    aggregation: pre-calc enable on 0x280, USB-mode bits on 0x10c/0x283, then the size/timeout word
+    (size 0, timeout 1 in monitor)."""
+    dma_usb_agg = t.read8(_REG_RXDMA_AGG_PG_TH + 3)
+    agg_enable = t.read8(_REG_TXDMA_PQ_MAP)
+    value32 = t.read32(_REG_RXDMA_AGG_PG_TH)
+    t.write32(_REG_RXDMA_AGG_PG_TH, value32 | _BIT_EN_PRE_CALC)
+    t.write8(_REG_TXDMA_PQ_MAP, agg_enable | _BIT_RXDMA_AGG_EN)
+    t.write8(_REG_RXDMA_AGG_PG_TH + 3, dma_usb_agg & ~_BIT_DMA_USB_AGG)
+    t.write16(_REG_RXDMA_AGG_PG_TH, _RXAGG_SIZE | (_RXAGG_TIMEOUT << 8))
+
+
+def _fa_cnt_statistics(t, st: WatchdogState) -> tuple[int, int]:
+    """phydm_false_alarm_counter_statistics (AC) [SRC] phydm_dig.c:1940 — read the FA/CCA/CRC32
+    counters, the two diagnostic dbg ports, reset the counters, and (first tick) set the crc32-cnt2
+    spec-rate. Returns (cnt_all, cnt_cck_fail) for the DIG and CCK-PD decisions."""
+    vals = {addr: t.read32(addr) for addr in _FA_READ_SEQ}
+    cnt_ofdm_fail = vals[_REG_OFDM_FA] & 0xFFFF
+    cnt_cck_fail = vals[_REG_CCK_FA] & 0xFFFF
+    cck_enable = bool(t.read32(_REG_BB_RX_PATH) & _CCK_ENABLE)
+    cnt_all = cnt_ofdm_fail + (cnt_cck_fail if cck_enable else 0)
+
+    # phydm_get_dbg_port_info: dbg port 0x0 (dbg_port0) then 0x209 (EDCCA flag) — diagnostic reads.
+    for port in (0x0, _ADAPTIVITY_DBG_PORT):
+        _set_bb_dbg_port(t, port)
+        _get_bb_dbg_port_val(t)
+        _release_bb_dbg_port(t)
+
+    # phydm_false_alarm_counter_reg_reset (11AC): OFDM FA (0x9a4[17]), CCK FA (0xa2c[15]), page-F.
+    set_bb_reg(t, _REG_OFDM_FA_RST, 1 << 17, 1)
+    set_bb_reg(t, _REG_OFDM_FA_RST, 1 << 17, 0)
+    set_bb_reg(t, _REG_CCK_FA_RST, 1 << 15, 0)
+    set_bb_reg(t, _REG_CCK_FA_RST, 1 << 15, 1)
+    set_bb_reg(t, _REG_BB_HW_CNT_RST, 1 << 0, 1)
+    set_bb_reg(t, _REG_BB_HW_CNT_RST, 1 << 0, 0)
+
+    if st.first_tick:
+        # phydm_set_crc32_cnt2_rate: ofdm2=6M (0xb), ht2/vht2 idx 0 (the rest write back unchanged).
+        set_bb_reg(t, _REG_CRC32_CNT2_RATE, 0x0000F000, _SPEC_RATE_6M)
+        set_bb_reg(t, _REG_CRC32_CNT2_RATE, 0x007F0000, 0x0)
+        set_bb_reg(t, _REG_CRC32_CNT2_RATE, 0x0F000000, 0x0)
+        set_bb_reg(t, _REG_CRC32_CNT2_RATE, 0x30000000, 0x0)
+    return cnt_all, cnt_cck_fail
+
+
+def _dig(t, st: WatchdogState, cnt_all: int) -> None:
+    """phydm_dig [SRC] phydm_dig.c:1336 — no-link new-IGI from the FA count, clamped to
+    [0x1c, 0x2a]; odm_write_dig only writes 0xC50 on a change. At monitor idle the FA count holds
+    in the [2000, 4000] band so IGI is unchanged (no wire), but the decision still runs."""
+    igi = st.cur_ig_value
+    if cnt_all > _FA_TH[2]:
+        igi += 2
+    elif cnt_all > _FA_TH[1]:
+        igi += 1
+    elif cnt_all < _FA_TH[0]:
+        igi -= 2
+    new_igi = max(_DIG_MIN, min(igi, _DIG_MAX_OF_MIN))
+    if new_igi != st.cur_ig_value:
+        set_bb_reg(t, _REG_IGI_A, 0x7F, new_igi)
+        st.cur_ig_value = new_igi
+
+
+def _write_cck_pd_type2(t, pd_th: int, cs_ratio: int) -> None:
+    """phydm_write_cck_pd_type2 [SRC] phydm_cck_pd.c:156 — pd_th into 0xa08[21:16], cs_ratio into
+    0xaa8[20:16]."""
+    set_bb_reg(t, _REG_CCK_PD_TH, 0x3F0000, pd_th)
+    set_bb_reg(t, _REG_CCK_CS_RATIO, 0x1F0000, cs_ratio)
+
+
+def _set_cckpd_lv_type2(t, st: WatchdogState, lv: int) -> None:
+    """phydm_set_cckpd_lv_type2 [SRC] phydm_cck_pd.c:170 — read cck_n_rx (0xa2c: BIT18 && BIT22),
+    THEN the (lv, n_rx)-unchanged early-return. On this 1R card BIT18 is clear so the C ``&&``
+    short-circuits to a single 0xa2c read; a same-level update still issues that read while writing
+    nothing. On a real change reset the FA moving-average and write pd_th/cs_ratio (the 2R cs offset
+    never applies at n_rx=1)."""
+    cck_n_rx = 2 if (get_bb_reg(t, _REG_CCK_N_RX, 1 << 18)
+                     and get_bb_reg(t, _REG_CCK_N_RX, 1 << 22)) else 1
+    if lv == st.cck_pd_lv and cck_n_rx == st.cck_n_rx:
+        return
+    st.cck_n_rx = cck_n_rx
+    st.cck_pd_lv = lv
+    st.cck_fa_ma = _CCK_FA_MA_RESET
+    cs_add, cs_2r_offset, pd_th = _CCKPD_LV2_PARAMS[lv]
+    cs_ratio = st.aaa_default + cs_add
+    if cck_n_rx == 2:
+        cs_ratio = cs_ratio - cs_2r_offset if cs_ratio >= cs_2r_offset else 0
+    _write_cck_pd_type2(t, pd_th, cs_ratio)
+
+
+def _cck_pd_th(t, st: WatchdogState, cnt_cck_fail: int) -> None:
+    """phydm_cck_pd_th -> phydm_cckpd_type2 (no-link) [SRC] phydm_cck_pd.c:1617 / :319. Fold the
+    CCK-FA count into the moving average, then pick the PD level (no-link: LV_1 if MA>1000, LV_0 if
+    MA<500, else hold = no update). ``phydm_stop_cck_pd_th``'s only no-link gate (5G + is_linked)
+    never fires in monitor, so this runs every tick / band; on 5G the CCK-FA reads ~0 so the MA
+    holds and no update fires. On an update the lv/n_rx check (incl. the 0xa2c read) lives in
+    ``_set_cckpd_lv_type2`` — so a same-level update still reads 0xa2c."""
+    if st.cck_fa_ma == _CCK_FA_MA_RESET:
+        st.cck_fa_ma = cnt_cck_fail
+    else:
+        st.cck_fa_ma = (st.cck_fa_ma * 3 + cnt_cck_fail) >> 2
+    if st.cck_fa_ma > 1000:
+        lv = _CCK_PD_LV1
+    elif st.cck_fa_ma < 500:
+        lv = _CCK_PD_LV0
+    else:
+        return
+    _set_cckpd_lv_type2(t, st, lv)
+
+
+def _adaptivity(t, st: WatchdogState) -> None:
+    """phydm_adaptivity -> phydm_set_edcca_threshold (NORMAL) [SRC] phydm_adaptivity.c:203 —
+    L2H = max(igi + 8, 48), H2L = L2H - 8, into 0x8a4 byte0/byte1."""
+    th_l2h = max(st.cur_ig_value + _TH_L2H_DIFF_IGI, _EDCCA_TH_L2H_LB)
+    th_h2l = th_l2h - _EDCCA_HL_DIFF_NORMAL
+    set_bb_reg(t, _REG_EDCCA, 0x000000FF, th_l2h)
+    set_bb_reg(t, _REG_EDCCA, 0x0000FF00, th_h2l)
+
+
+def _rrsr_reset(t) -> None:
+    """rtw_phydm_set_rrsr [SRC] hal_dm.c:1812 (interleaved into the tick, not a watchdog member):
+    re-apply the RRSR init value 0x15d (masked RMW -> unchanged)."""
+    cur = t.read32(_REG_RRSR)
+    t.write32(_REG_RRSR, (cur & ~0xFFFFF) | _RRSR_VAL_INIT)
+
+
+def _halrf_thermal(t, st: WatchdogState) -> None:
+    """odm_txpowertracking_check_ce [SRC] halrf_powertracking_ce.c:818 — a 2-phase trigger toggled
+    by tm_trigger every tick. ARM (tm_trigger 0->1): read the meter, set RF 0x42[17:16]=3 (a masked
+    RF write = the 0x2908 read-back + LSSI 0xc90 write) so it settles for next tick. CALLBACK
+    (tm_trigger 1->0): the meter has settled -> run the thermal power-tracking callback."""
+    if not st.tm_trigger:
+        cur = read_rf(t, _REG_RF_T_METER)               # 0x2800 + (0x42<<2) = 0x2908
+        data = (cur & ~(0x3 << 16)) | (_RF_T_METER_TRIG << 16)
+        t.write32(0x0C90, (_REG_RF_T_METER << 20) | (data & 0xFFFFF))
+        st.tm_trigger = True
+    else:
+        _halrf_thermal_callback(t, st)
+        st.tm_trigger = False
+
+
+def _halrf_thermal_callback(t, st: WatchdogState) -> None:
+    """odm_txpowertracking_callback_thermal_meter [SRC] halphyrf_ce.c:409 (8821C MIX_MODE, path A).
+    Read the settled meter, average it (4-deep ring), and only when the averaged value moved since
+    last callback re-derive the OFDM swing index from the 2.4G delta-swing table and apply it:
+    0xc94[6:1] = absolute_ofdm_swing_idx & 0x3f, 0xc1c[31:21] = the BB-swing scaling. In the
+    monitor / small-delta regime the swing index stays within [-tx_pwr_idx, 63-tx_pwr_idx] so it
+    passes `get_mix_mode` unchanged and the BB-swing index stays at default_ofdm_index (0xc1c
+    write is identity). The averaging / table math is software; only the two writes hit the wire."""
+    if t.thermal_reset_pending:                         # a band switch reset the tracking baseline
+        st.thermal_value = st.eeprom_thermal            # odm_clear_txpowertracking_state [SRC] :166
+        st.ofdm_swing_idx = 0
+        t.thermal_reset_pending = False
+    raw = (read_rf(t, _REG_RF_T_METER) & _THERMAL_FIELD) >> 10
+    thermal = max(0, min(raw + st.thermal_offset, 63))
+    st.thermal_avg[st.thermal_avg_idx] = thermal        # the avg ring is NOT reset on band switch
+    st.thermal_avg_idx = (st.thermal_avg_idx + 1) % _AVG_THERMAL_NUM
+    nz = [v for v in st.thermal_avg if v]
+    avg = sum(nz) // len(nz) if nz else thermal
+    if avg == st.thermal_value:                         # outer delta 0 -> no power-track this tick
+        return
+    delta = min(abs(avg - st.eeprom_thermal), _TXPWR_TRACK_TABLE_MAX)
+    tbl_n, tbl_p = _delta_swing_tables(t.current_channel)
+    if avg > st.eeprom_thermal:                         # temp above PG base: positive swing
+        new_idx = tbl_p[delta]
+    else:                                               # at/below base: negative swing
+        new_idx = -tbl_n[delta]
+    st.thermal_value = avg
+    if new_idx == st.ofdm_swing_idx:                    # power_index_offset 0 -> no apply
+        return
+    st.ofdm_swing_idx = new_idx
+    set_bb_reg(t, _REG_OFDM_TX_AGC, 0x7E, new_idx & 0x3F)
+    cur = t.read32(_REG_OFDM_BB_SWING)                  # bb_swing stays at default -> identity write
+    t.write32(_REG_OFDM_BB_SWING, cur)
+
+
+def _dyn_bw_indication(t) -> None:
+    """phydm_dyn_bw_indication -> phydm_bw_fixed_setting [SRC] phydm_api.c:800 — no-link bw-fixed:
+    pri-ch field 0 (20 MHz) then bw-fixed enable (both already committed at init -> identity)."""
+    set_bb_reg(t, _REG_BW_FIXED, 0xF, 0x0)
+    set_bb_reg(t, _REG_BW_FIXED, 1 << 4, 0x1)
+
+
+def _ccx_get_result(t, st: WatchdogState, trig_bit: int, rdy_reg: int,
+                    rpt_regs: tuple[int, ...]) -> None:
+    """phydm_{nhm,clm}_get_result [SRC] phydm_ccx.c:993/1960 — clear the trigger bit, poll the
+    ready flag (BIT16), and read the report words only when ready (no-link monitor: not ready, so
+    only the clear RMW + the ready poll hit the wire)."""
+    set_bb_reg(t, _REG_CCX_CTRL, trig_bit, 0)
+    if t.read32(rdy_reg) & (1 << 16):
+        for r in rpt_regs:
+            t.read32(r)
+        t.read32(rdy_reg)                               # duration/result re-read when ready
+
+
+def _ccx_trigger(t, trig_bit: int) -> None:
+    """phydm_{nhm,clm,fahm}_trigger [SRC] phydm_ccx.c:820/1884/98 — clear then set the trigger bit."""
+    set_bb_reg(t, _REG_CCX_CTRL, trig_bit, 0)
+    set_bb_reg(t, _REG_CCX_CTRL, trig_bit, 1)
+
+
+def _env_mntr(t, st: WatchdogState) -> None:
+    """phydm_env_mntr_watchdog [SRC] phydm_ccx.c:2338 — the NHM/CLM/FAHM measurement engines, in
+    order NHM-get/set, CLM-get/set, NHM-trig, CLM-trig, then FAHM (get/set/trig). At monitor idle
+    with the IGI unchanged the period/include SETs fire once (first tick) and the threshold curves
+    are suppressed (carried *_igi already equals the live IGI); only the trigger bit flips repeat."""
+    # NHM get + mntr_set
+    _ccx_get_result(t, st, 1 << 1, _REG_NHM_RDY, _REG_NHM_RPT)
+    if not st.nhm_include_set:
+        set_bb_reg(t, _REG_CCX_CTRL, 0xF00, 0x1)        # CNT_ALL + ccx-enable (identity)
+        st.nhm_include_set = True
+    if st.nhm_period != _NHM_PERIOD_MAX:
+        set_bb_reg(t, _REG_CCX_PERIOD, 0xFFFF0000, _NHM_PERIOD_MAX)
+        st.nhm_period = _NHM_PERIOD_MAX
+    igi = t.read32(_REG_IGI_A) & 0x7F                    # nhm th_update_chk
+    if igi != st.nhm_igi:
+        st.nhm_igi = igi
+        _nhm_set_th(t, igi)                             # IGI moved -> rewrite the threshold curve
+    # CLM get + mntr_set (period already 0xffff from init -> suppressed)
+    _ccx_get_result(t, st, 1 << 0, _REG_CLM_RDY, ())
+    if st.clm_period != _CLM_PERIOD_MAX:
+        set_bb_reg(t, _REG_CCX_PERIOD, 0x0000FFFF, _CLM_PERIOD_MAX)
+        st.clm_period = _CLM_PERIOD_MAX
+    _ccx_trigger(t, 1 << 1)                             # NHM trigger
+    _ccx_trigger(t, 1 << 0)                             # CLM trigger
+    # FAHM get + mntr_set + trig (FAHM is ready in the capture -> denom + 6 report dwords read)
+    if t.read32(_REG_FAHM_RDY) & (1 << 31):
+        t.read32(_REG_FAHM_RDY)                         # denominator [15:0]
+        for i in range(6):
+            t.read32(_REG_FAHM_RPT + i * 4)
+    if not st.fahm_include_set:
+        set_bb_reg(t, _REG_CCX_CTRL, 0xE0, 0x1)         # INCLUDE_FA
+        st.fahm_include_set = True
+    if st.fahm_period != _NHM_PERIOD_MAX:
+        set_bb_reg(t, _REG_FAHM_CTRL, 0xFFFF00, _NHM_PERIOD_MAX)
+        st.fahm_period = _NHM_PERIOD_MAX
+    igi = t.read32(_REG_IGI_A) & 0x7F                    # fahm th_update_chk
+    if igi != st.fahm_igi:
+        st.fahm_igi = igi
+        _fahm_set_th(t, igi)                            # IGI moved -> rewrite the FAHM threshold
+    _ccx_trigger(t, 1 << 2)                             # FAHM trigger
+
+
+def tick(t, st: WatchdogState) -> None:
+    """One dynamic-check watchdog tick, in wire order. ``phydm_noisy_detection`` / ``phydm_dig``
+    (no change) / ``phydm_ra_info_watchdog`` / ``phydm_cfo_tracking`` are software-silent here."""
+    _sreset_check(t)
+    _usb_rx_agg(t)
+    t.read32(_REG_RCR)                                   # hw_var_rcr_get (interleaved)
+    cnt_all, cnt_cck_fail = _fa_cnt_statistics(t, st)
+    _dig(t, st, cnt_all)
+    _cck_pd_th(t, st, cnt_cck_fail)
+    _adaptivity(t, st)
+    if st.first_tick:
+        _rrsr_reset(t)              # interleaved one-shot RRSR update; absent on later ticks
+    _halrf_thermal(t, st)
+    _dyn_bw_indication(t)
+    _env_mntr(t, st)
+    st.first_tick = False

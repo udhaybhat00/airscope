@@ -1,0 +1,176 @@
+"""RTL8821AU (DKMS/PHYDM) constants — transcribed verbatim from the contributor
+vendor source, NOT mainline rtw88. Register names follow this tree: the 8821a
+uses REG_MCUFWDL (0x0080) for FW-download control, not the 8814a/8822b-era
+REG_MCUFW_CTRL — those symbols do not exist here.
+
+[SRC] cites are vendor `file:line`.
+"""
+from __future__ import annotations
+
+
+def BIT(n: int) -> int:
+    return 1 << n
+
+
+# --- USB IDs ---
+USB_VID_REALTEK = 0x0BDA
+USB_PID_AWUS036ACS = 0x0811  # RTL8811AU/8821AU; [SRC] supported-device-IDs
+
+# --- Vendor control-transfer (rtw88 family) [SRC] include/usb_ops.h:19-31 ---
+REALTEK_USB_VENQT_READ = 0xC0     # bmRequestType, device->host
+REALTEK_USB_VENQT_WRITE = 0x40    # bmRequestType, host->device
+REALTEK_USB_VENQT_CMD_REQ = 0x05  # bRequest
+REALTEK_USB_VENQT_CMD_IDX = 0x00  # wIndex
+MAX_VENDOR_REQ_CMD_SIZE = 254
+
+# --- MAC registers [SRC] include/hal_com_reg.h ---
+REG_SYS_ISO_CTRL = 0x0000       # :39
+REG_SYS_FUNC_EN = 0x0002        # :40  (+1 = 0x0003, bit2 = 8051 core gate)
+REG_APS_FSMCO = 0x0004          # :41  (pwr-seq touches 0x04/0x05/0x06 byte-wise)
+REG_SYS_CLKR = 0x0008           # :42
+REG_RSV_CTRL = 0x001C           # :52  (8051 reset wrapper)
+REG_MULTI_FUNC_CTRL = 0x0068     # :78  (BT_FUNC_EN probe in EFUSE parse)
+REG_MCUFWDL = 0x0080            # :88  (FW download ctrl; +2 = page idx / 8051 rst hold)
+REG_SYS_CFG = 0x00F0            # :102 (no REG_SYS_CFG1/CFG2 in this tree)
+REG_CR = 0x0100                 # :117 (MAC DMA / WMAC / SCHEDULE / SEC enable)
+REG_LLT_INIT = 0x01E0           # :159
+REG_HMETFR = 0x01CC             # :153  (H2C trigger; InitializeFirmwareVars8812 writes 0x0F)
+REG_TXDMA_OFFSET_CHK = 0x020C   # :174
+REG_AUTO_LLT = 0x0224           # :179
+
+# --- REG_MCUFWDL (0x0080) bits [SRC] hal_com_reg.h:1269-1276 ---
+MCUFWDL_EN = BIT(0)
+MCUFWDL_RDY = BIT(1)
+FWDL_ChkSum_rpt = BIT(2)
+MACINI_RDY = BIT(3)
+BBINI_RDY = BIT(4)
+RFINI_RDY = BIT(5)
+WINTINI_RDY = BIT(6)
+RAM_DL_SEL = BIT(7)
+
+# --- REG_CR (0x0100) enable bits [SRC] hal_com_reg.h:1345-1355 ---
+HCI_TXDMA_EN = BIT(0)
+HCI_RXDMA_EN = BIT(1)
+TXDMA_EN = BIT(2)
+RXDMA_EN = BIT(3)
+PROTOCOL_EN = BIT(4)
+SCHEDULE_EN = BIT(5)
+ENSEC = BIT(9)
+CALTMR_EN = BIT(10)
+# _InitPowerOn_8812AU CR-enable composite = 0x063F
+CR_ENABLE = (HCI_TXDMA_EN | HCI_RXDMA_EN | TXDMA_EN | RXDMA_EN
+             | PROTOCOL_EN | SCHEDULE_EN | ENSEC | CALTMR_EN)
+
+# --- LLT [SRC] hal_com_reg.h:1418-1425,1865,1876 ---
+_LLT_NO_ACTIVE = 0x0
+_LLT_WRITE_ACCESS = 0x1
+LAST_ENTRY_OF_TX_PKT_BUFFER_8812 = 255
+POLLING_LLT_THRESHOLD = 20
+
+
+def _LLT_INIT_DATA(x: int) -> int:
+    return x & 0xFF
+
+
+def _LLT_INIT_ADDR(x: int) -> int:
+    return (x & 0xFF) << 8
+
+
+def _LLT_OP(x: int) -> int:
+    return (x & 0x3) << 30
+
+
+def _LLT_OP_VALUE(x: int) -> int:
+    return (x >> 30) & 0x3
+
+
+# --- USB drop-incorrect-bulkout [SRC] hal_com_reg.h:1452 (ENABLE_USB_DROP_INCORRECT_OUT on) ---
+DROP_DATA_EN = BIT(9)
+
+# --- Firmware download [SRC] include/rtl8812a_hal.h:65-66, include/hal_com.h:158 ---
+FW_START_ADDRESS = 0x1000
+MAX_DLFW_PAGE_SIZE = 4096
+FW_SIZE_8812 = 0x8000      # max RAM code size
+FW_HEADER_SIZE = 32        # skipped before download (FirmwareDownload8812:618-622)
+
+# TX page boundary [SRC] include/rtl8812a_hal.h:203-215
+#   BCNQ_PAGE_NUM_8821 = 0x08, WOWLAN_PAGE_NUM_8821 = 0x00 (non-WOWLAN)
+#   TX_TOTAL_PAGE_NUMBER_8821 = 0xFF - 0x08 - 0x00 = 0xF7
+#   TX_PAGE_BOUNDARY_8821 = TX_TOTAL_PAGE_NUMBER_8821 + 1 = 0xF8
+BCNQ_PAGE_NUM_8821 = 0x08
+WOWLAN_PAGE_NUM_8821 = 0x00
+TX_TOTAL_PAGE_NUMBER_8821 = 0xFF - BCNQ_PAGE_NUM_8821 - WOWLAN_PAGE_NUM_8821
+TX_PAGE_BOUNDARY_8821 = TX_TOTAL_PAGE_NUMBER_8821 + 1
+
+# TX descriptor [SRC] include/rtw_xmit.h:215 (default IC branch) — 40 bytes for the
+# 8812a/8821a (the 8822b/8821c use 48). TXDESC_OFFSET == TXDESC_SIZE here.
+TXDESC_SIZE = 40
+
+# --- EFUSE read [SRC] hal_com_reg.h + rtl8812a_hal.h (JAGUAR) + core/efuse ---
+REG_9346CR = 0x000A             # autoload status (bit5 = EEPROM present)
+REG_EFUSE_CTRL = 0x0030         # +1 addr[7:0], +2 addr[9:8], +3 bit7 = ready/trigger
+REG_EFUSE_ACCESS = 0x00CF       # efuse access protection
+EFUSE_ACCESS_ON = 0x69
+EFUSE_ACCESS_OFF = 0x00
+EFUSE_MAP_LEN_JAGUAR = 512      # logical map length
+EFUSE_MAX_SECTION_JAGUAR = 64   # EFUSE_MAP_LEN / 8
+EFUSE_MAX_WORD_UNIT = 4         # words per PG section (JAGUAR)
+EFUSE_REAL_CONTENT_LEN_JAGUAR = 512   # physical efuse size (non-8814 jaguar)
+
+# --- EEPROM logical-map offsets [SRC] include/hal_pg.h (8821AU) ---
+RTL_EEPROM_ID = 0x8129
+EEPROM_USB_MODE_8812 = 0x08
+EEPROM_XTAL = 0xB9              # crystal_cap (AFE trim)
+EEPROM_THERMAL_METER_8821 = 0xBA
+EEPROM_PA_TYPE_8821AU = 0xBC
+EEPROM_LNA_TYPE_2G_8821AU = 0xBD
+EEPROM_LNA_TYPE_5G_8821AU = 0xBF
+EEPROM_RF_BOARD_OPTION_8821AU = 0xC1
+EEPROM_RF_BT_SETTING_8821 = 0xC3
+EEPROM_VERSION_8821 = 0xC4
+EEPROM_CUSTOM_ID_8812 = 0xC5
+EEPROM_TX_BBSWING_2G = 0xC6    # per-path TxScale index (2.4 GHz)
+EEPROM_TX_BBSWING_5G = 0xC7    # per-path TxScale index (5 GHz)
+EEPROM_CHANNEL_PLAN_8821 = 0xB8
+EEPROM_COUNTRY_CODE_8812 = 0xCB
+EEPROM_VID_8821AU = 0x100
+EEPROM_PID_8821AU = 0x102
+EEPROM_USB_OPTIONAL_FUNCTION0_8811AU = 0x104
+EEPROM_MAC_ADDR_8821AU = 0x107
+PG_TXPWR_SADDR = 0x10          # hal_spec->pg_txpwr_saddr — TX-power PG block start
+
+EEPROM_DEFAULT_CRYSTAL_CAP = 0x20
+EEPROM_DEFAULT_THERMAL_METER_8812 = 0x18
+EEPROM_DEFAULT_VERSION = 0
+EEPROM_DEFAULT_VID = 0x5678
+EEPROM_DEFAULT_PID = 0x1234
+EEPROM_DEFAULT_CUSTOMER_ID = 0xAB
+EEPROM_DEFAULT_SUBCUSTOMER_ID = 0xCD
+EEPROM_DEFAULT_BOARD_OPTION = 0x00
+
+BIT_BT_FUNC_EN = BIT(18)
+
+# CustomerID values used by hal_ReadIDs_8812AU VID/PID overrides [SRC] include/rtw_eeprom.h.
+EEPROM_CID_DEFAULT = 0x00
+EEPROM_CID_WHQL = 0xFE
+RT_CID_DEFAULT = 0
+RT_CID_DLINK = 12
+RT_CID_CHINA_MOBILE = 15
+RT_CID_819X_ALPHA_DLINK = 16
+RT_CID_819X_SERCOMM_BELKIN = 22
+RT_CID_819X_HP = 28
+RT_CID_819X_EDIMAX_ASUS = 35
+RT_CID_NETGEAR = 36
+RT_CID_PLANEX = 37
+RT_CID_CC_C = 38
+RT_CID_819X_SERCOMM_NETGEAR = 43
+RT_CID_DNI_BUFFALO = 46
+
+# Physical EFUSE bytes read by hal_ReadUsbType_8812AU.
+EFUSE_HIDDEN_USB_TYPE_ANTENNA_0 = 1019
+EFUSE_HIDDEN_USB_TYPE_ANTENNA_1 = 1018
+EFUSE_HIDDEN_USB_TYPE_WMODE_0 = 1021
+EFUSE_HIDDEN_USB_TYPE_WMODE_1 = 1020
+
+# Bit shorthands used by inline pokes.
+BIT0, BIT1, BIT2, BIT6, BIT7 = BIT(0), BIT(1), BIT(2), BIT(6), BIT(7)

@@ -1,0 +1,224 @@
+# RTL8821CU (8821cu_dkms)
+
+A self-contained port of the Realtek vendor/DKMS driver (`rtl8821cu-5.12.0.4`, in the capture
+bundle). RTL8821C silicon: 1T1R, 2.4 + 5 GHz 802.11ac, HALMAC + PHYDM, Jaguar-2 phystatus,
+firmware-based. Its power tables and init are specific enough that it doesn't share a base with
+other drivers.
+
+## Status
+
+Cold init, firmware boot, and monitor RX all work on hardware — both bands, fixed-channel or
+hopping, on par with the vendor driver (fixed-ch1 ~6.5 beacons/s vs the kernel's ~6.1–6.6/s).
+Active monitor (HW-ACK a forged MAC) works too — WPS-PBC HW-confirmed (see log).
+
+Three hardware bugs, all invisible to the byte-gate, were found and fixed (see Gotchas + log):
+
+- the cross-band RX coin toss — `_dc_cancellation` is no longer called (its ck320 toggle killed RX).
+- fixed-channel 2.4 GHz dead — a reader-quieted band bounce in `connect` (`_prime_2g_band`).
+- runtime focus RX-dead + transient 5 GHz TX — the same reader-vs-RF18 race at runtime: a reader
+  pause across deliberate (`scan=False`) tunes + `inject` under `_io_lock`.
+
+The no-BT (`bt_coexist=FALSE`) WiFi-only coex front-end is ported (`btcwifionly.py`, issue #53) but
+HARDWARE-UNVERIFIED — no no-BT card is available here. It is dead code on the combo reference
+(byte-gate unchanged), so it is regression-safe.
+
+Not done: ZeroCD discovery (the card enumerates as a CD-ROM — see Gotchas) and warm reattach.
+
+## Gotchas
+
+**The card hides as a CD-ROM (ZeroCD).** It enumerates as USB mass-storage and must be mode-switched
+to the Wi-Fi PID `0bda:c820` before any driver binds — so a freshly-plugged card shows a CD-ROM and
+Airscope finds nothing until the discovery layer handles the switch (a manager-level gap that hits most
+Realtek USB adapters). The offline port and gate are unaffected; the pcap was captured in Wi-Fi mode.
+
+**`_dc_cancellation` is deliberately not called** (`dm.phy_init_haldm`). The cal stops then restarts
+the 320 MHz BB clock (`_stop_ck320`, `0x8b4[6]`) for its DC measurement, and that restart
+intermittently fails to re-lock the demod → `RXFF_PTR=0`, OFDM false-alarm flood, dead RX on both
+bands ~half of cold boots. Its DC compensation is unneeded here — skipping it *raises* the beacon
+rate. Don't re-enable without re-validating on hardware; the byte-gate can't catch it (every wire op
+matches the vendor — the failure is the analog clock-restart transient, not a register value).
+
+**2.4 GHz needs a band-bounce prime, with the reader quiet.** The cold ch1 tune never makes the synth
+actually jump TO 2.4 GHz (it runs `_switch_band` but the LO doesn't re-lock on the premature,
+pre-antenna-switch tune), so RF18 BIT16 reads stuck-SET and every 2.4 GHz frame fails CRC. Only a
+real 5→2.4 GHz band switch re-locks the LO — a direct `RF18[16]=0` write does not (a reverted
+regression). `driver._prime_2g_band` bounces 2.4→5→2.4 after cold init; crucially the band-switch
+RF18 write is DROPPED if the bulk-IN reader runs concurrently (`_switch_channel` re-writes the stale
+BIT16=1), so it STOPS the reader across the bounce, then restarts it. Continuous hopping hides this
+(a later switch lands); only a fixed-2.4 GHz session exposes it.
+
+**The byte-gate is blind to timing and to read-modify-write correctness.** `verify_pcap` replays the
+*captured* read values, so a dropped settle delay, or an RMW that's only wrong when the real chip
+reads differently, both PASS — exactly how the dc_cancellation ck320 and the power-seq LDO-settle
+bugs survived byte-faithful ports. It PASSES while EXCEPTING (and reporting) the 91-op
+`_dc_cancellation` block we skip; the except is signature-checked (the unique `0xc10` write) so it
+can't mask a real divergence.
+
+## EFUSE variants (board burn)
+
+The driver runs on any card matching `SUPPORTED_IDS` regardless of its EFUSE burn. The pcap-gated
+reference card is **rfe_type_expand 0x22** (raw 0xCA): BTG default RF set, cut 4, 1-antenna at the
+main port, phydm package-1, combo (BT fused on), crystal 0x2e. `connect()` logs the detected burn
+once (`RTL8821CU board: ...`), tagging `[untested variant]` when the burn differs (only the
+reference is HW-verified).
+
+Two kinds of fuse data. **Values** (crystal, TX-power PG, MAC, thermal/kfree trim) feed computation
+— any value already works (read at runtime, never hardcoded). **Branches** select code paths; each
+is runtime-gated on the fuse, so a non-reference card takes its own path while the reference wire is
+byte-identical:
+
+- **rfe_type_expand** → `phy.init_hw_info_by_rfe`: default RF set (BTG/WLG), the phydm table
+  discriminators (`rfe>>3`, package-1 override), the DPDT default (0xcb4) — all rfe cases ported 1:1
+  [SRC] phydm_hal_api8821c.c:328.
+- **rfe / cut / package** → the PHY_REG / AGC / RADIOA init tables are the full vendor arrays
+  (verbatim row counts) walked by `phy_cond.walk`; a different card resolves different rows.
+- **default_rf_set (BTG/WLG)** → `chan._switch_rf_set`, the BTG AGC-diff table (`bb.phy_agc_config`,
+  BTG-only per [SRC] phydm_hwconfig.c:1225 — a WLG card correctly applies none), the TX-power
+  RF_PATH_B lookup (`txpower`).
+- **rfe module type / single_ant_path** → `btc._decode_rfe` (all 32 module types [SRC]
+  halbtc8821c1ant.c:2474) + the single-ant park in `btc.power_on_setting`.
+
+Generalization gaps closed (were hardcoded to the reference; now runtime-gated, reference
+byte-identical):
+
+- **A-cut RF 0xb8 LCK fix** — `chan._switch_channel` / `_switch_channel_5g` gate the RF 0xb8
+  read/bit19/write on `cut == ODM_CUT_A` [SRC] phydm_hal_api8821c.c:831-950. The reference (cut 4)
+  never touches RF 0xb8.
+- **rfe_type-2 "1212 module" 5G-RX fix** — `mac.hal_init_misc` writes PAD_CTRL1+3 = 0x36 only for a
+  raw rfe of 2 [SRC] rtl8821c_halinit.c:257. The reference (rfe 0x22) skips it.
+- **phydm derivation defaults** — `phy.init_hw_info_by_rfe` leaves `phydm_package_type` 0 unless the
+  rfe is a 0x2x combo arm (H4) [SRC] phydm_hal_api8821c.c:349/356; `EfuseInfo.default_rf_set`
+  zero-inits to BTG(0) not WLG(1) (M2) [SRC] phydm.h:1053. Reference (rfe 0x22) sets both explicitly.
+- **CCK RSSI LNA-gain table** — `rx.decode_rssi` picks the 16-entry table_1 (BTG) or 8-entry table_0
+  (WLG/WLA) on `default_rf_set`, surfaced to RX via `transport.cck_agc_report_type` at dm init (H3)
+  [SRC] phydm_cck_rssi_8821c :42-60 / phydm_cck_lna_bit_num_chk :178-185. Reference (BTG) → table_1.
+- **BB tx-swing per band** — `chan._set_bb_swing_by_band_2g/5g` write 0xc1c[31:21] from EEPROM
+  tx_bbswing (0xC6/0xC7, default 0 when unfused), not a hardcoded 0x200 (H2) [SRC] Hal_EfuseTxBBSwing
+  / phy_get_tx_bbswing_8821c :610-668. Reference tx_bbswing = 0x00 → 0x200 (byte-identical).
+- **TXAGC PG base fallback + clamp** — `txpower.parse_pg` substitutes the IC-default PG base
+  (2.4G 0x2D / 5G 0x28) for any invalid (> txgi_max) EFUSE base and `set_tx_power_level` clamps the
+  final index to [0,63] (H1) [SRC] hal_load_pg_txpwr_info :1004 / clamp :6126. Reference PG is fully
+  fused and ≤ 63, so both are no-ops.
+
+Residual gaps (vendor-ported but HW-untested; only the reference burn is pcap+HW gated):
+
+- Every non-reference branch above is vendor-ported but hardware-untested — hence the connect tag.
+- **2-antenna board** (`ant_num == 2`): only the 1-antenna BT-coex module (`halbtc8821c1ant`) is
+  ported, not `halbtc8821c2ant`. connect() warns; the card "gives it a shot" on the 1-antenna path.
+- **No-BT card** (`bt_coexist == FALSE`): the WiFi-only coex front-end (`halbtc8821cwifionly.c`) is
+  ported in `btcwifionly.py` and gated in on the `else` of every `bt_coexist` branch (hal-init,
+  set_channel band-switch). Its rfe decode diverges from `btc._decode_rfe` for module types 10-15
+  (the wifi-only variant only recognizes types 1-7, rest default to WLG/main). HW-unverified.
+- **IQK / TX-power tracking** (`config_phydm_set_ant_path`, `default_ant_num_8821c`) is unported for
+  ALL cards (monitor mode never sets `bNeedIQK`), so its antenna-number branch is moot here.
+- The A-cut `phydm_ccapar*` tables are `#if 0` in the vendor build (compiled out — not a gap).
+
+## Orientation
+
+Start at `bringup.cold_bringup` — init → power seq → firmware → MAC → BB → RF, in kernel order.
+Channel tuning is `chan.set_channel` (band-switch sub-step only when the band changes). RSSI is
+`rx.decode_rssi` — jgr2 phystatus (decoding it as Jaguar-1 was an early mistake). The two
+hardware-bug fixes live in `dm.phy_init_haldm` (the skipped cal) and `driver._prime_2g_band`. Names
+match the vendor C, so grep the bundle's `driver-source/` to cross-reference.
+
+## Scripts
+
+- `verify_pcap.py` — the cold-boot byte gate (PASS; excepts the skipped dc_cancellation block).
+- `scripts/rx/beacon_watch.py` (+ `beacon_watch_usbcap.py`) — live beacons/s vs the kernel baseline.
+- `bringup_hop.py` — continuous dual-band RX-health check, GOOD/DEAD per launch.
+- `dc_ab.py` / `dc_steps.py` — the A/B harnesses that pinned the dc_cancellation ck320 bug; kept for re-validation.
+
+## Debug log
+
+### 2026-09-14 — five per-card generalization fixes (H1-H4, M2)
+
+Five values hardcoded to the pcap reference were generalized to their vendor derivation; each is
+runtime-gated so the reference stays byte-identical (verify_pcap 21318/21409). See the "Generalization
+gaps closed" bullets. Non-obvious findings pinned by replaying the reference EFUSE:
+
+- **tx-swing branch (H2):** the reference's `bautoload_fail_flag` is FALSE — `rtl8821c_read_efuse`
+  overwrites it from the EEPROM-ID (map-valid), NOT the AUTOLOAD_SUS bit [SRC] rtl8821c_ops.c:475/492.
+  So it takes the autoload-OK branch and reads EEPROM tx_bbswing (0xC6/0xC7 = 0x00 → 0x200), not the
+  registry-swing branch the old comment claimed. `info.autoload_ok` (the sus bit) is a different flag.
+- **PG diffs need no fallback (H1):** an unfused 0xFF diff nibble parses to -1, which is a valid diff
+  (`IS_PG_TXPWR_DIFF_INVALID` is `>7 || <-8`), so the vendor keeps it — only PG *bases* fall back.
+  Reference path-B 5G bases are 0xFF but the BTG card reads 5G from path A, so the fallback is unseen.
+
+### 2026-09-14 — no-BT WiFi-only coex front-end (issue #53, HW-unverified)
+
+A no-BT RTL8821CU (MercuSYS MU6H, `bt_coexist=FALSE`) crashed on the first channel tune:
+`btc.switchband_notify_2g` dereferences `t.btc`, which only `btc.hal_init` (combo path) creates, so
+the no-BT card AttributeError'd; even gated out, its WiFi front-end (GNT owner, coex tables, antenna
+switch) was never routed. The vendor handles no-BT combo silicon via a separate wifi-only coex
+module our port never had. `btcwifionly.py` ports `ex_hal8821c_wifi_only_hw_config` +
+`hal8821c_wifi_only_switch_antenna` + the wifi-only rfe decode; bring-up and set_channel now take it
+on the `else` of `bt_coexist` [SRC] rtl8821c_halinit.c:294 / rtl8821c_phy.c:719. Unverified on
+hardware (no no-BT card here). The combo reference is `bt_coexist=TRUE`, so these branches never run
+there — byte-gate unchanged at 21318/21409, so it is regression-safe.
+
+### 2026-09-14 — verify_pcap harness regressions (port was byte-correct)
+
+Two stacked *harness* bugs turned the gate red; the shipped driver stayed byte-faithful.
+321fe35f installed the operational-inject `retry_ctrl=False` monkeypatch before `connect()`,
+so it leaked into the connect-phase FW reserved-page download and diverged at op#3578
+(desc byte18 0x1a→0x00) — fixed by scoping the patch to `_walk_operational`. 9d9f026d's sticky
+`ReplayDevice._diverged` then re-raised on the dc_cancellation except's resync retry (a fake
+op#7535 frontier) — fixed by clearing it on resync. Gate PASSES 21318/21409 again.
+
+### 2026-07-08 — runtime RF18-vs-reader race: focus RX-dead + transient 5 GHz TX
+
+The cold-prime race (a concurrent bulk-IN reverts the `_switch_channel` RF18 read-modify-write) also
+bit at runtime, where only `_prime_2g_band` guarded it — one cause, two symptoms:
+
+- **Focus tune goes RX-dead** (fix a 5 GHz target while hopping 5 GHz): the one-shot `set_channel`
+  RF18 write was reverted by the reader, and with no further hop nothing re-landed it (hopping
+  self-heals, a fixed session doesn't — the cold-prime signature). `set_channel` now pauses the
+  reader across a deliberate (`scan=False`) tune; the hop path (`scan=True`) skips it (no per-hop
+  drain), and no RX is lost — the write already runs with TRX stopped.
+- **Transient 5 GHz TX** (PMKID/deauth needing retries): `inject_frame` held no lock, so a frame
+  could bulk-OUT mid-tune onto a stranded synth; it now runs under `_io_lock`.
+
+The vendor doesn't hit either: its RX is URB-based (no blocking reader to contend with the RF SIPI
+read) and TX is serialized via `setch_mutex` + the command thread — so the reader pause is our
+blocking-reader equivalent and the inject lock matches that discipline. `RxReaderThread` gained an
+opt-in `pause()`/`resume()` (8821cu-only). HW: a `scan=False` sweep of five 5 GHz channels (same-band
+5→5 focus tunes) caught beacons on all, 0 dead / 2 runs; user-confirmed reliable live TX, no RX-rate
+impact.
+
+### 2026-06-24 — active-monitor (HW-ACK forged MAC)
+
+`FAKE_MAC` UNIMPLEMENTED → SPOOFABLE. `enter/exit_active_monitor` re-point REG_MACID (0x0610)
+to the chosen MAC and back to the EFUSE MAC — MAC-only, like every Realtek sibling: the
+accept-all monitor RCR (`_MONITOR_RCR` AAP) already HW-ACKs `RA==REG_MACID`, no RCR flip. Both
+run under `_io_lock`, offloaded, like `set_channel` / the watchdog tick. Cold path untouched
+(byte-gate still PASS). HW-confirmed: WPS-PBC completes against an ACK-strict AP (~25 EAPOLs).
+
+### 2026-06-24 — RX fixed on both bands
+
+The cross-band coin toss (~30–60% of cold boots dead on both bands, `RXFF_PTR=0` with the demod
+false-alarm-flooding) was `_dc_cancellation`. The RF/MAC register state was byte-identical
+good-vs-dead, so a subtractive A/B (`dc_steps.py`, monkeypatching one analog step out at a time)
+pinned it to the cal's ck320 (320 MHz BB clock) stop/restart: skipping only that toggle restores RX,
+skipping the LNA or 3-wire does not, and a settle delay doesn't rescue it — the clock-restart
+transient itself, not a missing wait. Fix: stop calling `_dc_cancellation`; its DC comp is unneeded
+and skipping raises the beacon rate. (Eliminated along the way, all with hardware A/Bs: the DC-comp
+output, IQK — `bNeedIQK` is never set in monitor mode — timing/pacing, reader-start ordering,
+BT-coex, the interrupt/C2H channels, and CCK value handling.)
+
+Fixed 2.4 GHz separately: a non-hopping ch1 session decoded 0 beacons because the cold tune leaves
+RF18 BIT16 stuck-set and `_switch_channel` re-asserts it from a stale read. Restored a 2.4→5→2.4 band
+bounce (`_prime_2g_band`) to re-lock the LO, and STOP the reader across it so the band-switch RF18
+write isn't dropped by a concurrent bulk-IN read. Fixed-ch1 then reads ~6.5 beacons/s.
+
+### 2026-06-24 — power-seq LDO settle
+
+`pwrseq._run_table` treated `_CMD_DELAY` as a no-op, dropping the 1 ms LDO settle `CARDEMU_TO_ACT`
+carries after the `0x20[0]=1` power enable (vendor `halmac_common_88xx.c:3078`). A sleep emits no
+wire op, so the byte-gate never saw it missing. A real fix (the vendor does it), but NOT the
+coin-toss cure — that was dc_cancellation.
+
+### 2026-06-23 — first 2.4 GHz light + RSSI
+
+Cold boot reproduced byte-for-byte but 2.4 GHz RX was dead while 5 GHz worked — pinned to RF18 bit16
+(perfectly correlated with CRC failure). Same session: RSSI had been decoding with a Jaguar-1 borrow;
+switched to the real jgr2 format and it reads sane (−60 to −84 dBm).

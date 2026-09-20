@@ -1,0 +1,47 @@
+"""Channel model — the slice of ``struct ath9k_channel`` the bring-up/tune path reads.
+
+The AR9271 is 2.4 GHz only, so ``channelFlags`` never carries CHANNEL_5GHZ; the predicates
+mirror the IS_CHAN_* macros [SRC] hw.h:457-468 so ported code reads like the C.
+"""
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+CHANNEL_5GHZ = 0x1                      # [SRC] hw.h:457
+CHANNEL_HALF = 0x2
+CHANNEL_QUARTER = 0x4
+CHANNEL_HT = 0x8                        # [SRC] hw.h:460
+CHANNEL_HT40PLUS = 0x10
+CHANNEL_HT40MINUS = 0x20
+
+
+@dataclass
+class Channel:
+    channel: int                       # 802.11 channel number (1..14 on 2.4 GHz)
+    center_freq: int                   # MHz
+    channelFlags: int = 0
+
+    def is_5ghz(self) -> bool:
+        return bool(self.channelFlags & CHANNEL_5GHZ)
+
+    def is_2ghz(self) -> bool:
+        return not self.is_5ghz()
+
+    def is_half_rate(self) -> bool:
+        return bool(self.channelFlags & CHANNEL_HALF)
+
+    def is_quarter_rate(self) -> bool:
+        return bool(self.channelFlags & CHANNEL_QUARTER)
+
+    def is_ht40(self) -> bool:                  # [SRC] hw.h:477
+        return bool(self.channelFlags & (CHANNEL_HT40PLUS | CHANNEL_HT40MINUS))
+
+    def is_ht20(self) -> bool:                  # [SRC] hw.h IS_CHAN_HT20
+        return bool(self.channelFlags & CHANNEL_HT) and not self.is_ht40()
+
+
+def channel_2ghz(ch: int) -> Channel:
+    """A 2.4 GHz channel by number. ch1=2412 MHz, +5 MHz/channel; ch14 is the special 2484 MHz
+    (not 2477) [SRC] common-init.c ath9k_2ghz_channels[]."""
+    freq = 2484 if ch == 14 else 2407 + ch * 5
+    return Channel(channel=ch, center_freq=freq, channelFlags=0)
