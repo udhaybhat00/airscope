@@ -1,13 +1,13 @@
 # Fast pre-merge checks: lint, the mocked unit-test suite, and an import smoke. Runs on every
-# pull request, plus pushes to master (the repo commits directly to master, so PR-only CI would
-# never see those). All ubuntu-latest = 1x minutes; no hardware needed (USB is fully mocked).
+# pull request, plus pushes to main. All ubuntu-latest = 1x minutes; no hardware needed
+# (USB is fully mocked).
 
 name: CI
 
 on:
   pull_request:
   push:
-    branches: [master]
+    branches: [main]
 
 # A newer push/PR-update supersedes an in-flight run on the same ref.
 concurrency:
