@@ -44,7 +44,7 @@ class AirscopeApp(App):
     BINDINGS = [Binding("ctrl+p", "preferences", "Prefs")]
 
     CSS = """
-    /* Signal Noir chrome: single-line header, rounded panels, fixed log height */
+    /* Midnight: single-line header, rounded panels, fixed log height */
     Header { height: 1 !important; background: $surface; color: $foreground; }
     Footer { background: $surface; color: $foreground; }
     #ascii-art {
@@ -64,7 +64,7 @@ class AirscopeApp(App):
         margin-top: 1;
     }
     #button-row Button:focus {
-        text-style: bold reverse;   /* clear cue when Tab lands on a button */
+        text-style: bold reverse;
     }
     #start-btn {
         background: $accent;
@@ -81,7 +81,7 @@ class AirscopeApp(App):
         color: $foreground;
     }
     ListView, #device-select {
-        width: 52;                  /* fits the longest card name */
+        width: 52;
         height: auto;
         max-height: 12;
         border: round $primary;
@@ -112,8 +112,6 @@ class AirscopeApp(App):
     Button.-warning:hover { background: $warning 80%; }
     Button.-error { background: $error; color: $background; }
     Button.-error:hover { background: $error 80%; }
-    /* App CSS outranks a widget's DEFAULT_CSS, so lower the global min-width for the
-       EvilTwin modal's compact BSSID buttons from here, not the modal. */
     EvilTwinInputModal #bssid-btns Button { min-width: 4; }
     """
 

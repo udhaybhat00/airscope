@@ -46,9 +46,10 @@ def test_option_appends_bands():
     assert _option(_iface(chans=())) == "card"
 
 
-def test_plus_one_bumps_last_nibble():
+def test_plus_one_bumps_last_octet():
     assert _plus_one("94:83:c4:8c:3f:78") == "94:83:c4:8c:3f:79"
-    assert _plus_one("94:83:c4:8c:3f:7f") == "94:83:c4:8c:3f:70"   # wraps f -> 0
+    assert _plus_one("94:83:c4:8c:3f:ff") == "94:83:c4:8c:3f:00"   # wraps ff -> 00
+    assert _plus_one("94:83:c4:8c:3f:0f") == "94:83:c4:8c:3f:10"   # nibble boundary
 
 
 def test_random_bssid_is_locally_administered():

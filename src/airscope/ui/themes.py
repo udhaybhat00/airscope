@@ -21,7 +21,7 @@ def custom_themes() -> list[Theme]:
 
 
 def _airscope_noir() -> Theme:
-    """Signal Noir: ink-slate base, mint/cyan/amber split by meaning."""
+    """Midnight: deep navy base, electric blue primary, warm amber accent."""
     return Theme(
         name="airscope-noir",
         dark=True,
@@ -44,7 +44,6 @@ def _airscope_noir() -> Theme:
             "airscope-muted": NOIR["muted"],
             "airscope-attack": NOIR["attack"],
             "airscope-track": NOIR["track"],
-            # Splash logo colors
             THEME_BARS_PRIMARY_KEY: NOIR["logo-bars-primary"],
             THEME_BARS_SECONDARY_KEY: NOIR["logo-bars-secondary"],
             THEME_TEXT_PRIMARY_KEY: NOIR["logo-text-primary"],
@@ -58,29 +57,29 @@ def _airscope_noir_contrast() -> Theme:
     return Theme(
         name="airscope-noir-contrast",
         dark=True,
-        primary="#8ff5cf",
-        secondary="#7dd8ff",
-        accent="#ffc06a",
-        foreground="#f0f4f9",
+        primary="#93c5fd",
+        secondary="#c4b5fd",
+        accent="#fcd34d",
+        foreground="#f1f5f9",
         background="#000000",
-        success="#8ff5cf",
-        warning="#ffc06a",
-        error="#ff8080",
-        surface="#0d1117",
-        panel="#141a24",
+        success="#6ee7b7",
+        warning="#fcd34d",
+        error="#fca5a5",
+        surface="#0f172a",
+        panel="#1e293b",
         variables={
-            "block-cursor-background": "#8ff5cf",
-            "block-cursor-blurred-background": "#2a3a4a",
-            "block-hover-background": "#1b2534",
-            "input-selection-background": "#23404a",
-            "screen-selection-background": "#1f4a3f",
-            "airscope-muted": "#8a94a3",
-            "airscope-attack": "#d5a6ff",
-            "airscope-track": "#2a3342",
-            THEME_BARS_PRIMARY_KEY: "#8ff5cf",
-            THEME_BARS_SECONDARY_KEY: "#3a9a73",
+            "block-cursor-background": "#93c5fd",
+            "block-cursor-blurred-background": "#1e3a5f",
+            "block-hover-background": "#1e293b",
+            "input-selection-background": "#1e3a5f",
+            "screen-selection-background": "#1e3a5f",
+            "airscope-muted": "#94a3b8",
+            "airscope-attack": "#d8b4fe",
+            "airscope-track": "#1e293b",
+            THEME_BARS_PRIMARY_KEY: "#93c5fd",
+            THEME_BARS_SECONDARY_KEY: "#60a5fa",
             THEME_TEXT_PRIMARY_KEY: "#ffffff",
-            THEME_TEXT_SECONDARY_KEY: "#8a94a3",
+            THEME_TEXT_SECONDARY_KEY: "#94a3b8",
         },
     )
 
@@ -105,7 +104,9 @@ def _airscope_green_dark() -> Theme:
             "block-hover-background": "#163322",
             "input-selection-background": "#005f3a",
             "screen-selection-background": "#007a48",
-            # Splash logo colors
+            "airscope-muted": "#7aa88a",
+            "airscope-attack": "#00ff88",
+            "airscope-track": "#101810",
             THEME_BARS_PRIMARY_KEY: "#00ff22",
             THEME_BARS_SECONDARY_KEY: "#008f22",
             THEME_TEXT_PRIMARY_KEY: "#f4fff8",

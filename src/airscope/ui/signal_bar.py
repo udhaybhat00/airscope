@@ -24,8 +24,8 @@ FULL_SCALE_RATE = 9.77
 
 # Brightness of the unfilled track: a dim ghost of the fill hue, so the
 # bar's full width (the headroom) stays visible.
-_FILL = "#7df0c4"
-_TRACK = "#232b3a"
+_FILL = "#60a5fa"
+_TRACK = "#1e293b"
 _DEAD = "#ff6b6b"
 
 
@@ -49,12 +49,11 @@ def render_signal_bar(
         return bar
 
     if rate <= 0.05:
-        # Red ╳ on the left. The box-drawing cross fills the cell, so it's level
-        # with the blocks (a centred ✕ glyph floats high).
-        bar.append("╳", style=f"bold {_DEAD}")
+        # Red X on the left. Account for the X + space consuming 2 chars.
+        bar.append("X", style=f"bold {_DEAD}")
         bar.append(" ")
-        for _ in range(width):
-            bar.append("█", style=_TRACK)
+        for _ in range(max(0, width - 2)):
+            bar.append("\u2588", style=_TRACK)
         return bar
 
     filled = min(1.0, rate / full_scale) * width

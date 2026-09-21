@@ -255,11 +255,11 @@ def write_html_report(title: str, aps: List[ApSnap], cracks: List[CrackEntry],
 <html lang="en"><head><meta charset="utf-8">
 <title>{html.escape(title)}</title>
 <style>
-body{{background:#0a0e14;color:#d6dce5;font-family:monospace;max-width:1000px;margin:2em auto;padding:0 1em}}
-h1{{color:#7df0c4}}h2{{color:#5ac8fa;border-bottom:1px solid #232b3a;padding-bottom:.3em}}
-table{{border-collapse:collapse;width:100%;margin:1em 0}}th,td{{border:1px solid #232b3a;padding:.3em .6em;text-align:left}}
-th{{background:#11161f;color:#7df0c4}}.stat{{color:#ffb454;font-size:1.2em}}
-code{{color:#7df0c4}}.empty{{color:#5b6472}}
+body{{background:#0b0f19;color:#e2e8f0;font-family:monospace;max-width:1000px;margin:2em auto;padding:0 1em}}
+h1{{color:#60a5fa}}h2{{color:#a78bfa;border-bottom:1px solid #1e293b;padding-bottom:.3em}}
+table{{border-collapse:collapse;width:100%;margin:1em 0}}th,td{{border:1px solid #1e293b;padding:.3em .6em;text-align:left}}
+th{{background:#131825;color:#60a5fa}}.stat{{color:#f59e0b;font-size:1.2em}}
+code{{color:#34d399}}.empty{{color:#64748b}}
 </style></head><body>
 <h1>{html.escape(title)}</h1>
 <h2>Scan summary</h2>

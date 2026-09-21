@@ -58,6 +58,12 @@ from ...encryption_format import wep_key_ascii
 from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .packet_dashboard import PacketDashboard
 from .log_band import LogBand
+from .card_endpoint import CardEndpoint
+from .router_endpoint import RouterEndpoint
+from .tx_picker import TxDevicePicker
+from . import art
+from .art import pool_art, pick_primary
+from airscope.models.identity import IdSource
 
 if TYPE_CHECKING:
     from airscope.ui.app import AirscopeApp
@@ -135,7 +141,6 @@ class FocusViewV2(Screen):
         Binding("c", "campaign('chop')", "ChopChop", show=True),
         Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
         Binding("s", "silence", "Silence", show=True),
-        Binding("s", "unsilence", "unSilence", show=True),
         Binding("q", "app.quit", "Quit", show=True),
     ]
 
@@ -148,26 +153,30 @@ class FocusViewV2(Screen):
     #topbar { height: %(top)d; }
     #actions { width: auto; height: 100%%; }
     #topbar Button { height: 3; width: auto; min-width: 0; margin: 0 1 0 0; }
-    /* Idle attacks are ghost outlines; running (magenta) marks the live one. */
     #topbar .attack-btn { background: transparent; border: round $primary; color: $foreground; }
     #topbar .attack-btn:hover { background: $primary 18%%; }
     #topbar .attack-btn:disabled { border: round $surface; color: $text-muted; }
     #topbar .attack-btn.running {
-        background: #c792ea; border: round #c792ea; color: #0a0e14; text-style: bold;
+        background: #c084fc; border: round #c084fc; color: #0b0f19; text-style: bold;
     }
-    #topbar .attack-btn.running:hover { background: #c792ea 80%%; }
+    #topbar .attack-btn.running:hover { background: #c084fc 80%%; }
     #status { width: 1fr; height: 3; content-align: center middle; text-align: center; }
     #rspacer { width: 0; height: 1; }
 
     #mid { height: 1fr; }
-    #target-header { width: %(ew)d; align: center middle; }
-    .target-card { width: 100%%; height: 100%%; border: round $primary; padding: 1; }
-    .target-essid { width: 100%%; height: 1; text-align: center; text-style: bold; }
-    .target-bssid { width: 100%%; height: 1; text-align: center; color: $text-muted; }
-    .target-channel { width: 100%%; height: 1; text-align: center; color: $secondary; }
-    .target-signal { width: 100%%; height: 1; text-align: center; }
-    .target-enc { width: 100%%; height: 1; text-align: center; color: $accent; }
+    #card { width: %(ew)d; height: 100%%; align: center middle; }
+    .endpoint-art { width: %(ew)d; }
+    #card .card-static { width: 100%%; text-align: center; color: $text-muted; }
+    #card .card-dynamic { width: 100%%; text-align: center; color: $primary; text-style: italic; }
     #dashboard { width: 1fr; height: 100%%; padding: 0 1; }
+    #router { width: %(ew)d; height: 100%%; align: center middle; }
+    #router .ap-power { width: 100%%; height: 1; }
+    #router .ap-essid { width: 100%%; height: 1; text-align: center; text-style: bold; }
+    #router .ap-static { width: 100%%; height: 1; text-align: center; color: $text-muted; }
+    #router .ap-static Button { width: auto; height: 1; min-width: 0; border: none;
+        background: transparent; color: $text-muted; margin: 0; padding: 0; }
+    #router .ap-static Button.identity-known { color: $secondary; }
+    #router .ap-static Button:hover { background: $primary 18%%; }
 
     #bottom { height: 1fr; }
     #log { width: 1fr; height: 100%%; border: round %(border)s;
@@ -188,6 +197,9 @@ class FocusViewV2(Screen):
                  background: $error; color: $text; content-align: center middle; }
     #help-strip { width: 100%%; height: 1; content-align: center middle; }
     """ % {"ew": _ENDPOINT_W, "top": _TOPBAR_H, "border": _BORDER}
+
+    _RX_KEYS = ("beacon", "data", "eapol", "wep_iv")
+    _TX_KEYS = ("inject", "deauth")
 
     def __init__(self, **kwargs) -> None:
         super().__init__(**kwargs)
@@ -228,8 +240,9 @@ class FocusViewV2(Screen):
             yield Static("", id="rspacer")
         with Horizontal(id="mid") as mid:
             mid.ALLOW_SELECT = False
-            yield self._target_header_widget()
+            yield CardEndpoint(**self._card_values(), id="card")
             yield PacketDashboard(self._dashboard_rows(), id="dashboard")
+            yield RouterEndpoint(**self._router_values(), id="router")
         with Horizontal(id="bottom"):
             yield LogBand([], id="log")
             yield ClientsList(self._client_list(), id="clients")
@@ -247,8 +260,9 @@ class FocusViewV2(Screen):
             await self._enter_target()
         elif target is not None:
             # Re-pin the pool to the target's channel on re-entry (STACK across channel-capable cards).
+            # Skip if a campaign is active - it owns the channel.
             array = self.app.array
-            if array is not None:
+            if array is not None and Campaign.active is None:
                 ok = await array.set_channel(target.channel, scan=False)
                 logger.info("[FOCUS] re-pin: bssid=%s ch=%s -> %s",
                             target.bssid, target.channel, ok)
@@ -258,28 +272,31 @@ class FocusViewV2(Screen):
 
     # ----- snapshot building -------------------------------------------------
 
-    def _target_header_widget(self) -> Static:
-        """Create a target header card with essid, bssid, channel, signal, encryption."""
-        try:
-            ap = self.app.target_ap
-        except Exception:
-            ap = None
+    def _card_values(self) -> dict:
+        """The card endpoint's compose seed: chipset + own MAC from the live pool, plus the
+        current dynamic line. Identity then tracks the pool live via ``_sync_card``."""
+        chipset, bssid = fm.card_identity(self.app.array)
+        return dict(chipset=chipset, bssid=bssid, dynamic=fm.card_dynamic())
+
+    def _router_values(self) -> dict:
+        """The AP identity + power primitives the router endpoint renders, read live from
+        the target (blanks when there's no target). ``beacon_rate`` mutates the beacon
+        deque, so this is its single caller per tick."""
+        ap = self.app.target_ap
         if ap is None:
-            content = Text("No target selected", style="dim")
-        else:
-            content = Text(no_wrap=True)
-            essid = ap.ssid or "<hidden>"
-            content.append(essid, style="bold")
-            content.append("\n")
-            content.append(ap.bssid, style="dim")
-            content.append("\n")
-            content.append(f"CH {ap.channel}", style="cyan")
-            content.append("  ")
-            content.append(f"{ap.signal} dBm", style="yellow")
-            content.append("\n")
-            enc = (ap.encryption or "unknown").upper()
-            content.append(enc, style="yellow")
-        return Static(content, id="target-header", classes="target-card")
+            return dict(essid="", bssid="", channel=0, power_dbm=-100, signal=None,
+                        wps=False, has_m1=False, probing=False, probe_disabled=False,
+                        identity="", identity_details=None)
+        essid = fm.truncate_ssid(ap.ssid) if ap.ssid else "\u2039hidden\u203a"
+        rate, _ = fm.beacon_rate(ap, self._beacon_samples, time.time())
+        return dict(essid=essid, bssid=ap.bssid, channel=ap.channel,
+                    power_dbm=ap.signal, signal=rate,
+                    wps=bool(ap.wps),
+                    has_m1=ap.identity.has_source(IdSource.WSC_M1),
+                    probing=self._is_probing(),
+                    probe_disabled=not (ap.wps and not ap.identity.has_source(IdSource.WSC_M1)),
+                    identity=ap.identity.summary,
+                    identity_details=fm.router_identity_details(ap))
 
     def _pbc_busy(self) -> bool:
         cur = self._controls.current
@@ -440,7 +457,7 @@ class FocusViewV2(Screen):
         enc = (ap.encryption or "").upper()
         if enc == "WEP":
             self._log("[bold italic]Passively listening[/bold italic] for [bold]WEP IVs[/bold]")
-        elif enc not in ("OPEN", "", "WPA3 "):
+        elif enc not in ("OPEN", "", "WPA3"):
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
             self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))
@@ -483,25 +500,10 @@ class FocusViewV2(Screen):
     # ----- per-tick paint ----------------------------------------------------
 
     def _refresh_target_header(self) -> None:
-        """Refresh the target header card with current AP info."""
-        ap = self._target_ap
-        if ap is None:
-            return
+        """Sync card + router endpoints with the live pool/AP."""
+        self._sync_card()
         try:
-            header = self.query_one("#target-header", Static)
-            content = Text(no_wrap=True)
-            essid = ap.ssid or "<hidden>"
-            content.append(essid, style="bold")
-            content.append("\n")
-            content.append(ap.bssid, style="dim")
-            content.append("\n")
-            content.append(f"CH {ap.channel}", style="cyan")
-            content.append("  ")
-            content.append(f"{ap.signal} dBm", style="yellow")
-            content.append("\n")
-            enc = (ap.encryption or "unknown").upper()
-            content.append(enc, style="yellow")
-            header.update(content)
+            self.query_one("#router", RouterEndpoint).update(**self._router_values())
         except Exception:
             pass
 
@@ -606,9 +608,6 @@ class FocusViewV2(Screen):
 
     # ----- endpoint LED flicker (instrumentation) ----------------------------
 
-    _RX_KEYS = ("beacon", "data", "eapol", "wep_iv")
-    _TX_KEYS = ("inject", "deauth")
-
     def _drive_leds(self, ap, array) -> None:
         """Flicker the endpoint LEDs on real traffic."""
         if array is None:
@@ -617,8 +616,37 @@ class FocusViewV2(Screen):
         prev, self._prev_stats = self._prev_stats, snap
         if prev is None:
             return
-        # LED flicker removed - endpoints no longer have art widgets
-        pass
+        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._RX_KEYS):
+            self.query_one("#router", RouterEndpoint).flicker()
+        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._TX_KEYS):
+            self.query_one("#card", CardEndpoint).flicker()
+
+    def _sync_card(self) -> None:
+        """Refresh the card endpoint (picker + art) from the live pool, polled because WlanArray has
+        no arrival callback. The shown card is the TX card: the campaign's locked one, else
+        select_iface's pick for this target."""
+        array = self.app.array
+        members = array.members if array else []
+        active = Campaign.active
+        ap = getattr(self.app, "target_ap", None)
+        if active is not None:
+            primary = active.iface
+        elif ap is not None and array is not None:
+            primary = array.select_iface(ap.channel)
+        else:
+            primary = None
+        primary = primary or pick_primary(members)
+        card = self.query_one("#card", CardEndpoint)
+        card.set_art(art.art_path_for(primary) if primary is not None else pool_art(members))
+        card.sync_picker(members, ap.channel if ap is not None else None,
+                         primary, active is not None)
+        card.update_bssid(members[0].mac_address if len(members) == 1 else None)
+
+    def on_tx_device_picker_selected(self, event: TxDevicePicker.Selected) -> None:
+        """User pinned a TX card in the picker: record the preference and sync the endpoint."""
+        if self.app.array is not None:
+            self.app.array.prefer(event.iface)
+        self._sync_card()
 
     # ----- event log (capture pipeline) --------------------------------------
 
@@ -696,6 +724,8 @@ class FocusViewV2(Screen):
             self._toggle_chop()
         elif bid == "btn-stop-pbc":
             self._user_stop_pbc()
+        elif bid == "btn-sae":
+            self._toggle_sae()
 
     def on_client_widget_deauth_requested(self, event: ClientWidget.DeauthRequested) -> None:
         self.run_worker(self._run_deauth_selected(event.mac), exclusive=True)
@@ -892,14 +922,18 @@ class FocusViewV2(Screen):
         """Save captured pairs (if any) when the SAE listen ends."""
         if camp.pairs:
             result = self.app.vault.save_sae(camp.target, camp.frames_for_pcap())
-            hint = _save_line(result) if result is not None else None
-            self._log(treelog.branch_ok(
-                f"[black bold on cyan]  SAE: {len(camp.pairs)} pair(s)"
-                + (f" {hint} " if hint else "") + " [/black bold on cyan]"))
-            name = camp.target.ssid or camp.target.bssid
-            self.notify(f"[bold]{escape(name)}[/bold]: {len(camp.pairs)} SAE pair(s) saved. "
-                        f"Convert with hcxpcapngtool, crack with hashcat -m 22000.",
-                        title="SAE captured", timeout=6)
+            if result is None:
+                self._log(treelog.leaf("[dim](save failed)[/dim]"))
+            else:
+                hint = _save_line(result)
+                self._log(treelog.branch_ok(
+                    f"[black bold on cyan]  SAE: {len(camp.pairs)} pair(s)"
+                    + (f" {hint} " if hint else "") + " [/black bold on cyan]"))
+                name = camp.target.ssid or camp.target.bssid
+                self.notify(
+                    f"[bold]{escape(name)}[/bold]: {len(camp.pairs)} SAE pair(s) saved. "
+                    "Convert with hcxpcapngtool, crack with hashcat -m 22000.",
+                    title="SAE captured", timeout=6)
         elif getattr(camp, "stopped", False):
             self._log(treelog.leaf_fail("[bright_red bold]Stopped SAE listen[/]"))
         else:
@@ -1013,7 +1047,7 @@ class FocusViewV2(Screen):
     def _finish_eviltwin(self, camp) -> None:
         """Reap a finished EvilTwin: a recovered PSK, a captured handshake, or a plain stop."""
         if camp.password:
-            ap = self._target_ap
+            ap = camp.target
             name = escape(ap.ssid or ap.bssid)
             self._log(treelog.branch(
                 f"[black bold on green] Password for {name}: "
@@ -1097,7 +1131,7 @@ class FocusViewV2(Screen):
 
     def _finish_wps_pin(self, camp) -> None:
         """Reap a finished WPS PIN sweep: log/save the found PIN, else the give-up reason."""
-        ssid = escape(camp.target.ssid or camp.bssid)
+        ssid = escape(camp.target.ssid or camp.target.bssid)
         if camp.state.found_pin:
             camp.target.wps_pin = camp.state.found_pin
             camp.target.wps_pin_psk = camp.state.found_psk

@@ -1,11 +1,12 @@
 import functools
 import logging
 import sys
+from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
 from textual.widgets import (
-    Static, ListView, ListItem, Label, Header, Footer, Button, SelectionList)
+    Static, ListView, ListItem, Label, Footer, Button, SelectionList)
 from textual.widgets.selection_list import Selection
 from textual.containers import Vertical, Center, Horizontal
 from textual import events, work
@@ -13,6 +14,7 @@ from rich.text import Text
 
 from typing import TYPE_CHECKING, Optional
 
+from airscope.ui.ansi_art import make_black_transparent, recolor_logo
 from airscope.ui.screens.setup_error import SetupErrorDialog
 from airscope.device.manager import Status
 
@@ -21,17 +23,27 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-# Suffix appended to a chipset name when 2+ of the same chip are present, so a multi-card
-# list doesn't read as a wall of identical names. Flip the glyph here (e.g. "_{n}", "·{n}").
 _DUP_SUFFIX = " #{n}"
-# A left buffer so chipset names don't butt against the list edge. Widen here for more indent.
 _LEFT_MARGIN = " "
 
 
+def _load_logo() -> Text:
+    """Load the ANSI logo from assets."""
+    logo_path = Path(__file__).parent.parent / "assets" / "logo_sm.ans"
+    try:
+        if logo_path.exists():
+            return make_black_transparent(Text.from_ansi(logo_path.read_text(encoding="utf-8")))
+    except Exception:
+        pass
+    return Text.from_markup("[bold]AIRSCOPE[/bold]\n[dim]wireless auditor[/dim]")
+
+
+_LOGO = _load_logo()
+
+
 class _PulsingDot(Static):
-    """A pulsing dot animation for status indicators."""
     _phase: float = 0.0
-    _chars = ["\u25cf", "\u25cb", "\u25cb"]  # filled circle, open circle, open circle
+    _chars = ["\u25cf", "\u25cb", "\u25cb"]
 
     def on_mount(self) -> None:
         self.set_interval(0.5, self._tick)
@@ -44,11 +56,10 @@ class _PulsingDot(Static):
     def _repaint(self) -> None:
         idx = int(self._phase * 3) % 3
         char = self._chars[idx]
-        self.update(Text(char, style="bold $primary"))
+        self.update(Text(char, style="bold cyan"))
 
 
 def _alpha_head(chipset: str) -> str:
-    """The leading non-digit run of a chipset name (``"RTL"`` of ``"RTL8812AU"``)."""
     i = 0
     while i < len(chipset) and not chipset[i].isdigit():
         i += 1
@@ -56,12 +67,6 @@ def _alpha_head(chipset: str) -> str:
 
 
 def device_list_labels(devices, bands=None) -> list:
-    """One Splash interface-list label per device: ``chipset[ #n] · vendor product[ badges]``. Two-axis
-    alignment keeps a multi-card list scannable: the alpha prefix (RTL/MT/RT/AR) is left-padded so
-    the model digits line up, and the chipset column is right-padded so the ``·`` separators line
-    up. ``#n`` shows only when 2+ cards share a chipset; the ``·`` tail only when a brand is known.
-    ``bands`` maps chipset → (2.4 GHz, 5 GHz); without it labels carry no badge (tests rely on this).
-    Alignment is relative to the cards present now, so it re-flows on plug/unplug."""
     if not devices:
         return []
     chip_counts: dict = {}
@@ -92,7 +97,6 @@ def device_list_labels(devices, bands=None) -> list:
 
 
 def device_capability_line(dev) -> str:
-    """One-line capability summary for a device card."""
     try:
         from airscope.chips.driver import FakeMacSupport
         from airscope.device.manager import supported_ids
@@ -102,7 +106,7 @@ def device_capability_line(dev) -> str:
             driver_cls = claim.import_driver()
             fake_mac = getattr(driver_cls, "FAKE_MAC", FakeMacSupport.NONE)
             if fake_mac not in (FakeMacSupport.NONE, FakeMacSupport.UNIMPLEMENTED):
-                return "[dim]Can create fake networks ✓[/dim]"
+                return "[dim]Can create fake networks \u2713[/dim]"
             return "[dim]Listen and inject only[/dim]"
     except Exception:
         pass
@@ -110,7 +114,6 @@ def device_capability_line(dev) -> str:
 
 
 def _band_badge(bands: Optional[tuple]) -> str:
-    """Trailing band badge for a ``(2.4 GHz, 5 GHz)`` pair; ``""`` when unknown."""
     if not bands:
         return ""
     lo, hi = bands
@@ -125,7 +128,6 @@ def _band_badge(bands: Optional[tuple]) -> str:
 
 @functools.lru_cache(maxsize=64)
 def _chipset_bands(chipset: str) -> Optional[tuple]:
-    """``(2.4 GHz, 5 GHz)`` for a chipset via lazy driver metadata; None when unknown."""
     try:
         from airscope.device.manager import supported_ids
         for claim in supported_ids().values():
@@ -138,22 +140,7 @@ def _chipset_bands(chipset: str) -> Optional[tuple]:
     return None
 
 
-def _wordmark() -> Text:
-    """3-line wordmark: AIRSCOPE / version / tagline."""
-    from airscope import __version__
-    t = Text(no_wrap=True)
-    t.append("AIRSCOPE", style="bold")
-    t.append("\n")
-    t.append(f"v{__version__}", style="dim")
-    t.append("\n")
-    t.append("wireless auditor", style="dim italic")
-    return t
-
 class SplashView(Screen):
-    """Splash + device picker: the logo, the list of live cards, Start and Uninstall buttons. START
-    and Uninstall delegate the whole bring-up / setup flow to ``app.device_manager``; the splash only
-    picks the cards and reports the terminal result."""
-
     app: "AirscopeApp"
 
     BINDINGS = [
@@ -163,9 +150,14 @@ class SplashView(Screen):
     ]
 
     CSS = """
-    SplashView #ascii-art { content-align: center middle; margin-bottom: 1; }
-    SplashView #status-row { align: center middle; height: auto; }
+    SplashView { background: $surface; }
+    SplashView #splash-container { height: 1fr; align: center middle; }
+    SplashView #ascii-art { content-align: center middle; width: 100%; margin-bottom: 0; }
+    SplashView #heading-label { width: 100%; content-align: center middle; text-style: bold; margin-top: 1; }
+    SplashView #status-row { width: 100%; align: center middle; height: auto; margin-top: 0; }
     SplashView #status-dot { width: 3; content-align: center middle; }
+    SplashView #status-label { width: 100%; content-align: center middle; }
+    SplashView #error-label { width: 100%; content-align: center middle; margin-top: 0; }
     SplashView #device-list { border: round $primary; }
     SplashView #device-list ListItem.-highlight {
         border-left: solid $primary;
@@ -179,29 +171,27 @@ class SplashView(Screen):
         color: $foreground;
         text-style: bold;
     }
-    SplashView #device-select .selection-list--button-highlighted {
-        border-left: solid $primary;
-    }
-    SplashView #device-select .selection-list--button-selected-highlighted {
-        border-left: solid $primary;
-        color: $success;
-        text-style: bold;
-    }
     SplashView #button-row { height: auto; margin-top: 1; }
     SplashView #button-row Button { width: auto; min-width: 11; }
-    SplashView #status-label { content-align: center middle; margin-bottom: 1; }
-    SplashView #heading-label { content-align: center middle; text-style: bold; margin-bottom: 0; }
-    SplashView #help-strip { content-align: center middle; height: 1; margin-top: 1; }
+    SplashView #vault-btn {
+        background: transparent;
+        border: tall $success;
+        color: $success;
+    }
+    SplashView #prefs-btn {
+        background: transparent;
+        border: tall #64748b;
+        color: #64748b;
+    }
+    SplashView #help-strip { width: 100%; content-align: center middle; height: 1; margin-top: 1; }
     """
 
     def __init__(self):
         super().__init__()
         self._is_initializing = False
-        # DeviceIDs from the last render (the app's DeviceWatch feeds them), indexed to the rows.
         self._devices = []
 
     def compose(self) -> ComposeResult:
-        yield Header(show_clock=False)
         with Vertical(id="splash-container"):
             with Center():
                 yield Static(self._logo(), id="ascii-art")
@@ -211,7 +201,8 @@ class SplashView(Screen):
             with Center():
                 with Horizontal(id="status-row"):
                     yield _PulsingDot(id="status-dot")
-                    yield Label("[dim]Scanning for compatible hardware...[/dim]", id="status-label")
+                    yield Label("[dim]Scanning for compatible hardware...[/dim]",
+                                id="status-label")
             with Center():
                 yield Label("", id="error-label")
             with Center():
@@ -232,19 +223,18 @@ class SplashView(Screen):
         yield Footer()
 
     def _both_lists(self):
-        """The (single_list, multi_list) pair: the ListView shown for one card, the SelectionList
-        checkbox list shown for 2+. render_devices displays exactly one at a time."""
         return (self.query_one("#device-list", ListView),
                 self.query_one("#device-select", SelectionList))
 
     def _logo(self) -> Text:
-        return _wordmark()
+        theme = self.app.current_theme
+        return recolor_logo(_LOGO, theme.variables, dark=theme.dark)
 
     def refresh_theme_art(self) -> None:
-        pass
+        logo = self.query_one("#ascii-art", Static)
+        logo.update(self._logo())
 
     def _enter_scanning_mode(self) -> None:
-        """The 'pick a card' resting state."""
         self._is_initializing = False
         self._devices = []
         self.query_one("#error-label").display = False
@@ -257,29 +247,30 @@ class SplashView(Screen):
         multi_list.display = False
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
-        self.query_one("#status-label", Label).update("[dim]Scanning for compatible hardware...[/dim]")
+        self.query_one("#status-label", Label).update(
+            "[dim]Scanning for compatible hardware...[/dim]")
         self.query_one("#status-dot", _PulsingDot).display = True
+
+    def _repopulate_adapters(self) -> None:
+        present = self.app.device_watch.present()
+        if present:
+            self.render_devices(present)
 
     async def on_mount(self) -> None:
         uninstall = self.query_one("#uninstall-btn", Button)
         if sys.platform == "darwin":
             uninstall.display = False
-        else:
-            hint = "the WinUSB driver" if sys.platform == "win32" else "the udev/modprobe rules"
-            uninstall.tooltip = f"Uninstall {hint} for the highlighted card"
         self._enter_scanning_mode()
+        self.set_timer(0.5, self._repopulate_adapters)
+        self.app.theme_changed_signal.subscribe(
+            self, lambda _theme: self.refresh_theme_art())
 
     def reset_for_reentry(self) -> None:
-        """Returning to splash (adapter lost): the installed screen only resumes (on_mount doesn't
-        re-run) so restore the scanning state, resume the device watch perform_start paused, and
-        render the currently-present cards right away (not on the next 0.5s tick)."""
         self._enter_scanning_mode()
         self.app.device_watch.resume()
         self.render_devices(self.app.device_watch.present())
 
     def render_devices(self, devices) -> None:
-        """Render the current device list. Called by the app's DeviceWatch on plug/unplug. One card
-        shows a plain ListView; 2+ show a default-all-checked SelectionList so the user picks a subset."""
         if self._is_initializing:
             return
         self._devices = devices
@@ -328,12 +319,10 @@ class SplashView(Screen):
             uninstall_btn.disabled = True
 
     def _show_error(self, message: str) -> None:
-        """Surface a recoverable bring-up failure: a persistent red label (which poll_usb leaves
-        alone, unlike the status line) plus a toast."""
         label = self.query_one("#error-label", Label)
-        label.update(f"[bold red]⚠  {message}[/bold red]")
+        label.update(f"[bold red]\u26a0  {message}[/bold red]")
         label.display = True
-        self.query_one("#status-label", Label).update("[bold $error]● Bring-up failed[/]")
+        self.query_one("#status-label", Label).update("[bold red]\u25cf Bring-up failed[/]")
         self.notify(message, title="Card bring-up failed", severity="error")
 
     def _clear_error(self) -> None:
@@ -345,19 +334,16 @@ class SplashView(Screen):
         return len(self._devices) >= 2
 
     def _ready_prompt(self) -> str:
-        """The 'ready to go' status line: only 2+ cards need a 'select' step, one card is pre-armed."""
         prefix = "Select card(s) and " if self._using_multi() else ""
-        return f"[bold $text-success]●[/] {prefix}Press START to begin scanning"
+        return f"[bold green]\u25cf[/] {prefix}Press START to begin scanning"
 
     def _start_targets(self) -> list:
-        """The DeviceIDs to bring up: the checked rows (2+ cards) or the single present card."""
         if self._using_multi():
             sl = self.query_one("#device-select", SelectionList)
             return [self._devices[i] for i in sorted(sl.selected) if i < len(self._devices)]
         return list(self._devices)
 
     def _highlighted_device(self):
-        """The DeviceID of the cursor row (what Uninstall acts on), or None."""
         if self._using_multi():
             index = self.query_one("#device-select", SelectionList).highlighted
         else:
@@ -367,8 +353,6 @@ class SplashView(Screen):
         return self._devices[index]
 
     def action_enter(self) -> None:
-        """Enter dispatch: uninstall/vault/prefs when one of those buttons is focused, else
-        start the checked cards. Keeps Enter working from anywhere without stealing it."""
         if self._is_initializing:
             return
         focused = self.app.focused
@@ -386,19 +370,16 @@ class SplashView(Screen):
         self.action_start()
 
     def action_start(self) -> None:
-        """START: bring up the checked cards. Clicking a row only toggles it (no auto-start)."""
         if self._is_initializing:
             return
         targets = self._start_targets()
         if not targets:
-            if self._devices:                 # 2+ cards present but none checked
+            if self._devices:
                 self.notify("Select at least one card.", severity="warning")
             return
         self.perform_start(targets)
 
     def on_click(self, event: events.Click) -> None:
-        """Double-click the single card to start it (a third way in, alongside Enter and START). A
-        single click only highlights. Multi-card uses checkboxes, so this is single-card only."""
         if event.chain < 2 or self._is_initializing or self._using_multi():
             return
         clicked = event.widget
@@ -421,16 +402,14 @@ class SplashView(Screen):
             self.action_prefs()
 
     def action_vault(self) -> None:
-        """Open the loot manager; Esc returns here. Needs no card."""
         self.app.push_screen("vault")
 
     def action_prefs(self) -> None:
-        """Open preferences as a modal over the splash."""
         self.app.action_preferences()
 
     def _enter_busy(self) -> None:
         self._is_initializing = True
-        self.app.device_watch.pause()     # freeze the device watch so the list can't churn mid-bring-up
+        self.app.device_watch.pause()
         single_list, multi_list = self._both_lists()
         single_list.disabled = True
         multi_list.disabled = True
@@ -449,9 +428,6 @@ class SplashView(Screen):
 
     @work(exclusive=True)
     async def perform_start(self, devices) -> None:
-        """Bring up each checked card in turn through the engine; enter the scanner if any came up. The
-        engine owns the per-card progress modal, the install/replug dialogs, and the platform branching.
-        A per-card failure is a toast; a card whose install the user declines (CANCELLED) is skipped."""
         self._clear_error()
         self._enter_busy()
         pooled = 0
@@ -472,12 +448,11 @@ class SplashView(Screen):
             self.app.switch_screen("scanner")
         elif failures:
             self._show_error(failures[-1])
-        else:  # all declined / nothing checked
+        else:
             self.query_one("#status-label", Label).update(self._ready_prompt())
 
     @work(exclusive=True)
     async def perform_uninstall(self, device_id) -> None:
-        """Reverse airscope's driver/access for the selected card via the engine."""
         self._clear_error()
         self._enter_busy()
         try:
@@ -487,11 +462,11 @@ class SplashView(Screen):
 
         status = self.query_one("#status-label", Label)
         if res.ok:
-            status.update(f"[bold $text-success]● {res.message}[/]")
-            self.notify(f"[green]✓[/green] {res.message}", title="Uninstalled",
+            status.update(f"[bold green]\u25cf {res.message}[/]")
+            self.notify(f"[green]\u2713[/green] {res.message}", title="Uninstalled",
                         severity="information")
         elif res.cancelled:
             status.update(self._ready_prompt())
         else:
-            status.update("[bold $error]● Uninstall failed.[/]")
+            status.update("[bold red]\u25cf Uninstall failed.[/]")
             self.app.push_screen(SetupErrorDialog("Uninstall failed", res.message, res.detail))

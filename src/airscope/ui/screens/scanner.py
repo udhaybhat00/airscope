@@ -1,4 +1,3 @@
-import asyncio
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -41,8 +40,16 @@ if TYPE_CHECKING:
 
 STALE_DURATION_S = 10.0  # Seconds without a beacon before an AP row is dimmed.
 EVICT_DURATION_S = 30.0  # Seconds without a beacon before an AP is dropped from the table.
-FADE_DURATION_S = EVICT_DURATION_S
 
+_ENC_SUFFIX = {
+    EncryptionType.WPA2: " - Password protected",
+    EncryptionType.WPA1: " - Password protected",
+    EncryptionType.WEP: " - Weak encryption",
+    EncryptionType.OPEN: " - No password",
+    EncryptionType.WPA3: " - Modern security",
+    EncryptionType.WPA3_TRANSITION: " - Mixed mode",
+    EncryptionType.OWE: " - Open (enhanced)",
+}
 
 
 @dataclass(slots=True)
@@ -214,7 +221,7 @@ class ScannerView(Screen):
     ScannerView #scan-status { height: 1; background: $surface; }
     ScannerView #freeze-banner {
         height: 1; background: $accent; color: $background;
-        content-align: center middle; text-style: bold;
+        content-align: center middle; text-style: bold; display: none;
     }
     ScannerView #preview-strip {
         height: 3; border: round $primary;
@@ -256,9 +263,6 @@ class ScannerView(Screen):
     # Columns whose values are right-aligned in display.
     _RIGHT_ALIGNED = {"ssid", "channel", "signal", "clients"}
 
-    # Columns whose values are numeric for sorting.
-    _NUMERIC_COLS = {"channel", "signal", "clients"}
-
     def __init__(self):
         super().__init__()
         self.ap_cache: Dict[str, AccessPoint] = {}
@@ -278,7 +282,7 @@ class ScannerView(Screen):
         self._batch_running = False
         self._batch_runner = None
         self._frozen: bool = False
-        self._frozen_ap: Optional[AccessPoint] = None
+        self._theme_fg: str = "white"
         self._prev_cursor = None
 
     # ----- Compose / mount ---------------------------------------------------
@@ -330,7 +334,11 @@ class ScannerView(Screen):
             self._log_pbc_status()  # Auto-invade is ON by default
 
     async def on_screen_resume(self) -> None:
-        # Restart channel hopper
+        if self._frozen:
+            self._frozen = False
+            self._update_freeze_banner(False)
+            self._clear_preview_strip()
+            self._prev_cursor = None
         array = self.app.array
         if not array:
             return
@@ -529,10 +537,9 @@ class ScannerView(Screen):
             return
         if self._prev_cursor is not None and cursor != self._prev_cursor:
             if not self._frozen:
-                self._frozen = True
                 ap = self._selected_ap()
                 if ap:
-                    self._frozen_ap = ap
+                    self._frozen = True
                     self._update_preview_strip(ap)
                     self._update_freeze_banner(True)
         self._prev_cursor = cursor
@@ -568,12 +575,16 @@ class ScannerView(Screen):
             self.query_one("#ap-table", DataTable).remove_row(bssid)
         except Exception:
             pass
+        if self._frozen and self._selected_ap() is None:
+            self._frozen = False
+            self._update_freeze_banner(False)
+            self._clear_preview_strip()
 
     # ----- Cell construction -------------------------------------------------
 
     def _render_cell(
         self, ap: AccessPoint, col_key: str, is_stale: bool,
-        n_cli: int = 0, flash_bacon: bool = False, shown_beacons: Optional[int] = None,
+        n_cli: int = 0,
     ) -> Text:
         """Build the Text renderable for a single column cell."""
         fg = self._theme_fg
@@ -593,18 +604,9 @@ class ScannerView(Screen):
         if col_key == "encryption":
             cell = Text.from_markup(format_encryption_markup(ap, muted=fg), emoji=False, style=fg)
             enc_type = EncryptionType.from_ap(ap)
-            _ENC_SUFFIX = {
-                EncryptionType.WPA2: " - Password protected",
-                EncryptionType.WPA1: " - Password protected",
-                EncryptionType.WEP: " - Weak encryption",
-                EncryptionType.OPEN: " - No password",
-                EncryptionType.WPA3: " - Modern security",
-                EncryptionType.WPA3_TRANSITION: " - Mixed mode",
-                EncryptionType.OWE: " - Open (enhanced)",
-            }
             suffix = _ENC_SUFFIX.get(enc_type, "")
             if suffix:
-                cell.append_text(Text(suffix, style="dim" if not is_stale else "dim dim"))
+                cell.append_text(Text(suffix, style="dim"))
             if is_stale:
                 cell.stylize("dim")
             return cell
@@ -864,15 +866,17 @@ class ScannerView(Screen):
         if self._frozen:
             ap = self._selected_ap()
             if ap:
-                self._frozen_ap = ap
                 self._update_preview_strip(ap)
                 self._update_freeze_banner(True)
             else:
                 self._frozen = False
         else:
-            self._frozen_ap = None
             self._update_freeze_banner(False)
             self._clear_preview_strip()
+            try:
+                self._prev_cursor = self.query_one("#ap-table", DataTable).cursor_coordinate
+            except Exception:
+                self._prev_cursor = None
 
     def action_toggle_log(self) -> None:
         log_widget = self.query_one("#system-log")
@@ -1046,7 +1050,7 @@ class ScannerView(Screen):
             return
         if self._pbc_capturing:
             return
-        asyncio.create_task(self._invade_pbc(ap))
+        self.run_worker(self._invade_pbc(ap), exclusive=True)
 
     async def _invade_pbc(self, ap: AccessPoint) -> None:
         """Pause hop → tune to the target → run the PBC enrollment → resume."""
@@ -1208,7 +1212,6 @@ class ScannerView(Screen):
         target_ap = self.ap_cache.get(bssid)
         if target_ap:
             if self._frozen:
-                self._frozen_ap = target_ap
                 self._update_preview_strip(target_ap)
             if self.app.array:
                 await self.app.array.stop_hopping()

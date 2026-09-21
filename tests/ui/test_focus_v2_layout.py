@@ -45,11 +45,13 @@ async def test_layout_geometry():
             def reg(sel):
                 return scr.query_one(sel).region
 
-            target, dash = reg("#target-header"), reg("#dashboard")
+            card, dash, router = reg("#card"), reg("#dashboard"), reg("#router")
             pad = max(0, round((w - 80) * 0.4))
-            assert target.width == 20
-            assert target.x == pad and target.right == dash.x
-            assert dash.right == w - pad
+            assert card.width == 20
+            assert card.x == pad and card.right == dash.x
+            assert router.width == 20
+            assert dash.right == router.x == w - pad - 20
+            assert router.right == w - pad
 
             log, clients = reg("#log"), reg("#clients")
             assert clients.width == 40

@@ -18,7 +18,10 @@ _MAC_RE = re.compile(r"^([0-9a-f]{2}:){5}[0-9a-f]{2}$")
 
 
 def _plus_one(bssid: str) -> str:
-    return bssid[:-1] + format((int(bssid[-1], 16) + 1) % 16, "x")
+    parts = bssid.split(":")
+    last = (int(parts[-1], 16) + 1) % 256
+    parts[-1] = f"{last:02x}"
+    return ":".join(parts)
 
 
 def _random_bssid() -> str:
@@ -175,6 +178,12 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
     def _start(self) -> None:
         host = self._selected("twin-iface")
         punter = self._selected("punt-iface")
+        if host is None:
+            self._error("Select a twin adapter")
+            return
+        if punter is None:
+            self._error("Select a deauth adapter")
+            return
         twin_bssid = self.query_one("#twin-bssid", Input).value.strip().lower()
         if not _MAC_RE.match(twin_bssid):
             self._error("Invalid BSSID")

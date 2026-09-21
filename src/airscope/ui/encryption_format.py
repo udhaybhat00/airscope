@@ -12,12 +12,12 @@ from airscope.ui.icons import (
 
 
 # Signal Noir actionability palette (hex; replaces generic named colors):
-#   mint #7df0c4  = attackable today (we have an attack)
-#   amber #ffb454 = interesting but no attack yet
+#   green #34d399  = attackable today (we have an attack)
+#   amber #f59e0b = interesting but no attack yet
 #   red #ff6b6b   = out of scope (unsupported protocol)
 #   muted          = no attack needed (OPEN networks)
-_ATTACKABLE = "#7df0c4"
-_NO_ATTACK_YET = "#ffb454"
+_ATTACKABLE = "#34d399"
+_NO_ATTACK_YET = "#f59e0b"
 _OUT_OF_SCOPE = "#ff6b6b"
 
 

@@ -33,7 +33,7 @@
     const y = (v: number) => h - 4 - (v / max) * (h - 10);
     series.forEach((pts, si) => {
       if (pts.length === 0) return;
-      const stroke = color(tokens[si % tokens.length], '#7df0c4');
+      const stroke = color(tokens[si % tokens.length], '#60a5fa');
       const padded = pts.length === 1 ? [pts[0], pts[0]] : pts;
       ctx.beginPath();
       ctx.moveTo(x(0), y(padded[0]));

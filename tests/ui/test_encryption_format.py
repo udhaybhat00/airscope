@@ -12,7 +12,7 @@ def _ap(**kw) -> AccessPoint:
 def test_wep_is_attackable_with_iv_count():
     ap = _ap(encryption="WEP", wep=WepStats(unique_ivs=1234, total_frames=5000))
     m = format_encryption_markup(ap, detailed=False, muted="dim")
-    assert "[#7df0c4]◐ WEP[/#7df0c4]" in m
+    assert "[#34d399]◐ WEP[/#34d399]" in m
     assert "1.2k IVs" in m
 
 
@@ -26,7 +26,7 @@ def test_wep_detailed_omits_iv_count():
     must not duplicate it."""
     ap = _ap(encryption="WEP", wep=WepStats(unique_ivs=1234))
     assert format_encryption_markup(ap, detailed=True) == (
-        "[#7df0c4]◐ WEP[/#7df0c4]"
+        "[#34d399]◐ WEP[/#34d399]"
     )
 
 

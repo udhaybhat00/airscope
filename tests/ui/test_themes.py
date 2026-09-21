@@ -57,7 +57,7 @@ def test_recolor_logo_uses_dark_defaults_when_variable_is_missing():
 
     recolored = recolor_logo(text, {THEME_TEXT_PRIMARY_KEY: "#111111"})
 
-    assert str(recolored.spans[0].style) == "#111111 on #7df0c4"
+    assert str(recolored.spans[0].style) == "#111111 on #60a5fa"
 
 
 def test_recolor_logo_uses_light_defaults_for_textual_light_theme():
@@ -71,8 +71,16 @@ def test_recolor_logo_uses_light_defaults_for_textual_light_theme():
 
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_splash_logo_uses_current_theme_variables():
+    from textual.theme import Theme
     app = AirscopeApp()
+    app.register_theme(Theme(
+        name="logo-test", primary="#ffffff",
+        variables={THEME_BARS_PRIMARY_KEY: "#010203", THEME_TEXT_PRIMARY_KEY: "#040506"},
+    ))
     async with app.run_test() as pilot:
+        app.theme = "logo-test"
+        await pilot.pause()
         logo = pilot.app.screen.query_one("#ascii-art", Static).content
-    # The wordmark contains "AIRSCOPE" text
-    assert "AIRSCOPE" in logo.plain
+    styles = {str(span.style) for span in logo.spans}
+    assert any("#010203" in style for style in styles)
+    assert any("#040506" in style for style in styles)
