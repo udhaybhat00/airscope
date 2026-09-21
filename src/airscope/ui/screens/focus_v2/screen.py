@@ -42,11 +42,9 @@ from airscope.campaigns.pin import WpsCampaign, load_run_state, run_progress_lin
 from airscope.campaigns.deauth import DeauthCampaign
 from airscope.campaigns.sae import SaeCampaign
 from airscope.campaigns.pbc import WpsPbcCapture
-from airscope.campaigns.probe import probe_ap
 from .campaign_controls import CampaignControls
 from airscope.campaigns.wps.registrar import PinResult
 from airscope.crack.handshake import handshake_uncrackable_label
-from airscope.models import AccessPoint, IdSource
 from airscope.persist.config import Config
 
 from ... import focus_model as fm
@@ -57,13 +55,9 @@ from ...capture_log import short_sta
 from ...eapol_aggregate import EapolAggregator
 from ... import pmkid_log
 from ...encryption_format import wep_key_ascii
-from .card_endpoint import CardEndpoint
-from .tx_picker import TxDevicePicker
 from .clients_list import ClientsList, ClientWidget, FingerprintModal
 from .packet_dashboard import PacketDashboard
 from .log_band import LogBand
-from .router_endpoint import RouterEndpoint
-from . import art
 
 if TYPE_CHECKING:
     from airscope.ui.app import AirscopeApp
@@ -161,32 +155,19 @@ class FocusViewV2(Screen):
     #topbar .attack-btn.running {
         background: #c792ea; border: round #c792ea; color: #0a0e14; text-style: bold;
     }
+    #topbar .attack-btn.running:hover { background: #c792ea 80%%; }
     #status { width: 1fr; height: 3; content-align: center middle; text-align: center; }
     #rspacer { width: 0; height: 1; }
 
     #mid { height: 1fr; }
-    #card, #router { width: %(ew)d; align: center middle; }
-    /* Router art is a row shorter than the card's, so bottom-align it. */
-    #router { align: center bottom; }
+    #target-header { width: %(ew)d; align: center middle; }
+    .target-card { width: 100%%; height: 100%%; border: round $primary; padding: 1; }
+    .target-essid { width: 100%%; height: 1; text-align: center; text-style: bold; }
+    .target-bssid { width: 100%%; height: 1; text-align: center; color: $text-muted; }
+    .target-channel { width: 100%%; height: 1; text-align: center; color: $secondary; }
+    .target-signal { width: 100%%; height: 1; text-align: center; }
+    .target-enc { width: 100%%; height: 1; text-align: center; color: $accent; }
     #dashboard { width: 1fr; height: 100%%; padding: 0 1; }
-    .endpoint-art { width: %(ew)d; background: transparent; }
-    .card-static, .ap-static { width: 100%%; height: 1; text-align: center; color: $text-muted; }
-    .card-dynamic { width: 100%%; height: 1; text-align: center; color: $accent; }
-    .ap-essid { width: 100%%; height: 1; text-align: center; text-style: bold; }
-    .ap-power { width: 100%%; height: 1; text-align: center; }
-    #ap-identity-row { width: 100%%; height: 1; align-horizontal: center; }
-    #ap-identity {
-        width: 1fr; height: 1; min-width: 0; border: none; margin: 0; padding: 0;
-        background: transparent; color: $text-muted; content-align: center middle;
-    }
-    #ap-identity.identity-known { text-style: underline; color: $secondary; }
-    #ap-identity:focus { text-style: bold reverse; }
-    #ap-probe {
-        width: 4; height: 1; min-width: 0; border: none; margin: 0; padding: 0;
-        background: transparent;
-    }
-    #ap-probe:hover { background: $surface-lighten-1; }
-    #ap-probe:focus { text-style: bold reverse; }
 
     #bottom { height: 1fr; }
     #log { width: 1fr; height: 100%%; border: round %(border)s;
@@ -194,15 +175,11 @@ class FocusViewV2(Screen):
     #log-rich { width: 100%%; height: 1fr; background: transparent; border: none; padding: 0; }
     #clients { width: 40; height: 100%%; border: round %(border)s;
                border-title-color: %(border)s; border-title-style: bold; padding: 0 1; }
-    /* Rows scroll inside a fixed-height region; the broadcast button stays pinned. */
     #client-rows { width: 100%%; height: 1fr; }
     .bcast-btn { width: 100%%; height: 1; min-width: 0; border: none; margin: 0 0 1 0;
                  background: $error; color: $text; content-align: center middle; }
     .client-row { height: 1; width: 100%%; }
     .cl-fp { width: 2; }
-    /* A known fingerprint is clickable (pops up the detail popup): underline + accent color on
-       the MAC marks it, same as any other actionable text. Not on the emoji itself -- the
-       underline renders through the glyph rather than under it, which reads as broken/ugly. */
     .cl-bssid.fp-known { text-style: underline; color: $secondary; }
     .cl-bssid { width: 17; }
     .cl-pwr { width: 5; text-align: right; }
@@ -240,8 +217,7 @@ class FocusViewV2(Screen):
         yield Header()
         with Horizontal(id="topbar"):
             with Horizontal(id="actions"):
-                yield Button("‹ Scanner", id="back")
-                # The full attack set is composed once (hidden); refresh_buttons shows the ones that fit the target.
+                yield Button("Back", id="back")
                 for bid, label in _ATTACK_BUTTONS:
                     btn = Button(label, id=bid, classes="attack-btn")
                     btn.display = False
@@ -249,13 +225,11 @@ class FocusViewV2(Screen):
             status = self._status()
             self._last_status = status
             yield Static(self._render_status(status), id="status")
-            # Right spacer to accurately align status to sparklines.
             yield Static("", id="rspacer")
         with Horizontal(id="mid") as mid:
             mid.ALLOW_SELECT = False
-            yield CardEndpoint(**self._card_values(), id="card")
+            yield self._target_header_widget()
             yield PacketDashboard(self._dashboard_rows(), id="dashboard")
-            yield RouterEndpoint(**self._router_values(), id="router")
         with Horizontal(id="bottom"):
             yield LogBand([], id="log")
             yield ClientsList(self._client_list(), id="clients")
@@ -284,6 +258,29 @@ class FocusViewV2(Screen):
 
     # ----- snapshot building -------------------------------------------------
 
+    def _target_header_widget(self) -> Static:
+        """Create a target header card with essid, bssid, channel, signal, encryption."""
+        try:
+            ap = self.app.target_ap
+        except Exception:
+            ap = None
+        if ap is None:
+            content = Text("No target selected", style="dim")
+        else:
+            content = Text(no_wrap=True)
+            essid = ap.ssid or "<hidden>"
+            content.append(essid, style="bold")
+            content.append("\n")
+            content.append(ap.bssid, style="dim")
+            content.append("\n")
+            content.append(f"CH {ap.channel}", style="cyan")
+            content.append("  ")
+            content.append(f"{ap.signal} dBm", style="yellow")
+            content.append("\n")
+            enc = (ap.encryption or "unknown").upper()
+            content.append(enc, style="yellow")
+        return Static(content, id="target-header", classes="target-card")
+
     def _pbc_busy(self) -> bool:
         cur = self._controls.current
         return isinstance(cur, WpsPbcCapture) and not cur.done
@@ -298,32 +295,6 @@ class FocusViewV2(Screen):
         if self._probe_task is not None and not self._probe_task.done():
             self._probe_task.cancel()
         self._probe_task = None
-
-    def _router_values(self) -> dict:
-        """The AP identity + power primitives the router endpoint renders, read live from
-        the target (blanks when there's no target). ``beacon_rate`` mutates the beacon
-        deque, so this is its single caller per tick."""
-        ap = self.app.target_ap
-        if ap is None:
-            return dict(essid="", bssid="", channel=0, power_dbm=-100, signal=None,
-                        wps=False, has_m1=False, probing=False, probe_disabled=False,
-                        identity="", identity_details=None)
-        essid = fm.truncate_ssid(ap.ssid) if ap.ssid else "‹hidden›"
-        rate, _ = fm.beacon_rate(ap, self._beacon_samples, time.time())
-        return dict(essid=essid, bssid=ap.bssid, channel=ap.channel,
-                    power_dbm=ap.signal, signal=rate,
-                    wps=bool(ap.wps),
-                    has_m1=ap.identity.has_source(IdSource.WSC_M1),
-                    probing=self._is_probing(),
-                    probe_disabled=self._any_campaign_active(),
-                    identity=ap.identity.summary,
-                    identity_details=fm.router_identity_details(ap))
-
-    def _card_values(self) -> dict:
-        """The card endpoint's compose seed: chipset + own MAC from the live pool, plus the
-        current dynamic line. Identity then tracks the pool live via ``_sync_card``."""
-        chipset, bssid = fm.card_identity(self.app.array)
-        return dict(chipset=chipset, bssid=bssid, dynamic=fm.card_dynamic())
 
     def _status(self) -> list[str]:
         """The headline lines for the live target (empty when there's no target)."""
@@ -350,33 +321,6 @@ class FocusViewV2(Screen):
     @staticmethod
     def _render_status(status) -> Text:
         return Text("\n").join(Text.from_markup(s, emoji=False) for s in status)
-
-    def _sync_card(self) -> None:
-        """Refresh the card endpoint (picker + art) from the live pool, polled because WlanArray has
-        no arrival callback. The shown card is the TX card: the campaign's locked one, else
-        select_iface's pick for this target."""
-        array = self.app.array
-        members = array.members if array else []
-        active = Campaign.active
-        ap = getattr(self.app, "target_ap", None)
-        if active is not None:
-            primary = active.iface
-        elif ap is not None and array is not None:
-            primary = array.select_iface(ap.channel)
-        else:
-            primary = None
-        primary = primary or art.pick_primary(members)   # no capable card: still show something
-        card = self.query_one("#card", CardEndpoint)
-        card.set_art(art.art_path_for(primary) if primary is not None else art.pool_art(members))
-        card.sync_picker(members, ap.channel if ap is not None else None,
-                         primary, active is not None)
-        card.update_bssid(members[0].mac_address if len(members) == 1 else None)
-
-    def on_tx_device_picker_selected(self, event: TxDevicePicker.Selected) -> None:
-        """User pinned a TX card in the picker: record the preference and sync the endpoint."""
-        if self.app.array is not None:
-            self.app.array.prefer(event.iface)
-        self._sync_card()
 
     def refresh_buttons(self) -> None:
         """Set each attack button straight from its campaign class + the active campaign.
@@ -439,29 +383,26 @@ class FocusViewV2(Screen):
         self._target_ap = ap
         if ap is None:
             return
-        self.sub_title = f"{ap.ssid or '<hidden>'} · {ap.bssid} · CH{ap.channel}"
+        self.sub_title = f"{ap.ssid or '<hidden>'} - {ap.bssid} - CH{ap.channel}"
         array = self.app.array
         logger.info("[FOCUS] enter: ssid=%r bssid=%s ch=%s", ap.ssid, ap.bssid, ap.channel)
 
         self._beacon_samples.clear()
         self._events.reset()
         self._eapol_agg.reset()
-        self._prev_stats = None        # drop the old target's counters
+        self._prev_stats = None
         self.query_one("#log", LogBand).clear()
 
         status = self._status()
         self._last_status = status
         self.query_one("#status", Static).update(self._render_status(status))
         self.query_one("#dashboard", PacketDashboard).reconfigure(self._dashboard_rows(), array, ap.bssid)
-        self.query_one("#card", CardEndpoint).update(dynamic=fm.card_dynamic())
-        self._sync_card()
-        self.query_one("#router", RouterEndpoint).update(**self._router_values())
+        self._refresh_target_header()
         self.query_one("#clients", ClientsList).sync(self._client_list())
         self.refresh_buttons()
         self._balance_status()
-        self._refresh_status_footer()  # dashboard footer (cleared by reconfigure)
+        self._refresh_status_footer()
 
-        # Log initial "target acquired"
         enc = fm.encryption_chip(ap)
         if ap.ssid:
             chip = f"[black bold on cyan] {escape(ap.ssid)} [/black bold on cyan]"
@@ -500,7 +441,6 @@ class FocusViewV2(Screen):
         if enc == "WEP":
             self._log("[bold italic]Passively listening[/bold italic] for [bold]WEP IVs[/bold]")
         elif enc not in ("OPEN", "", "WPA3 "):
-            # 'Crackable' because the pipeline filters SAE-only out.
             self._log("[bold italic]Passively listening[/bold italic] for")
             self._log(treelog.branch("Crackable 4-Way [bold]Handshakes[/bold]"))
             self._log(treelog.leaf("Crackable [bold]PMKIDs[/bold]"))
@@ -541,6 +481,29 @@ class FocusViewV2(Screen):
             self._log(treelog.leaf(wps_progress) if rows else wps_progress)
 
     # ----- per-tick paint ----------------------------------------------------
+
+    def _refresh_target_header(self) -> None:
+        """Refresh the target header card with current AP info."""
+        ap = self._target_ap
+        if ap is None:
+            return
+        try:
+            header = self.query_one("#target-header", Static)
+            content = Text(no_wrap=True)
+            essid = ap.ssid or "<hidden>"
+            content.append(essid, style="bold")
+            content.append("\n")
+            content.append(ap.bssid, style="dim")
+            content.append("\n")
+            content.append(f"CH {ap.channel}", style="cyan")
+            content.append("  ")
+            content.append(f"{ap.signal} dBm", style="yellow")
+            content.append("\n")
+            enc = (ap.encryption or "unknown").upper()
+            content.append(enc, style="yellow")
+            header.update(content)
+        except Exception:
+            pass
 
     def _tick(self) -> None:
         if self._target_ap is None or not self.is_current:
@@ -583,9 +546,7 @@ class FocusViewV2(Screen):
         if status != self._last_status:
             self._last_status = status
             self.query_one("#status", Static).update(self._render_status(status))
-        self.query_one("#card", CardEndpoint).update(dynamic=fm.card_dynamic())
-        self._sync_card()
-        self.query_one("#router", RouterEndpoint).update(**self._router_values())
+        self._refresh_target_header()
         clients = self.query_one("#clients", ClientsList)
         clients.sync(self._client_list())
         clients.set_deauth_enabled(not fm.deauth_blocked(ap))
@@ -645,7 +606,6 @@ class FocusViewV2(Screen):
 
     # ----- endpoint LED flicker (instrumentation) ----------------------------
 
-    # Router LED = RX from the target; card LED = TX we send.
     _RX_KEYS = ("beacon", "data", "eapol", "wep_iv")
     _TX_KEYS = ("inject", "deauth")
 
@@ -655,12 +615,10 @@ class FocusViewV2(Screen):
             return
         snap = array.packet_stats.snapshot(ap.bssid)
         prev, self._prev_stats = self._prev_stats, snap
-        if prev is None:   # first frame after (re)acquire, no delta yet
+        if prev is None:
             return
-        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._RX_KEYS):
-            self.query_one("#router", RouterEndpoint).flicker()
-        if any(snap.get(k, 0) > prev.get(k, 0) for k in self._TX_KEYS):
-            self.query_one("#card", CardEndpoint).flicker()
+        # LED flicker removed - endpoints no longer have art widgets
+        pass
 
     # ----- event log (capture pipeline) --------------------------------------
 
@@ -744,76 +702,6 @@ class FocusViewV2(Screen):
 
     def on_client_widget_fingerprint_clicked(self, event: ClientWidget.FingerprintClicked) -> None:
         self.app.push_screen(FingerprintModal(event.mac, event.fingerprint, offset=event.offset))
-
-    def on_router_endpoint_identity_requested(self, event: RouterEndpoint.IdentityRequested) -> None:
-        self._log_identity_details_text(event.details)
-
-    def on_router_endpoint_probe_requested(self, event: RouterEndpoint.ProbeRequested) -> None:
-        ap = self._target_ap
-        if ap is None or not ap.wps:
-            return
-        if self._is_probing():
-            return
-        if self._any_campaign_active():
-            self._log(treelog.leaf_fail("cannot probe while attacks are active"))
-            return
-        self._probe_task = asyncio.create_task(self._run_probe(ap))
-        self.refresh_buttons()
-        self._sync_bindings()
-        self.query_one("#router", RouterEndpoint).update(**self._router_values())
-
-    def on_router_endpoint_probe_cancel_requested(self, event: RouterEndpoint.ProbeCancelRequested) -> None:
-        self._stop_probe()
-
-    async def _run_probe(self, ap: AccessPoint) -> None:
-        array = self.app.array
-        if not array:
-            self._log(treelog.leaf_fail("no active interface"))
-            return
-        iface = array.select_iface(ap.channel)
-        if iface is None:
-            self._log(treelog.leaf_fail(f"no interface can probe CH {ap.channel}"))
-            return
-        label = escape(ap.ssid or ap.bssid)
-        self._log(treelog.header(
-            f"[bold]Identity probe[/bold] on [cyan]{label}[/cyan] [dim](CH {ap.channel})[/dim]"
-        ))
-        try:
-            async with array.claim(iface):
-                result = await probe_ap(iface, ap)
-                if result.ok:
-                    self._log(treelog.leaf_ok(f"probe matched: [bold]{escape(ap.identity.summary)}[/bold]"))
-                    self._log_identity_details(ap)
-                else:
-                    self._log(treelog.leaf_fail(
-                        f"identity probe failed [dim]({escape(result.detail or 'no detail')})[/dim]"
-                    ))
-        except asyncio.CancelledError:
-            self._log(treelog.leaf_fail("identity probe cancelled"))
-            raise
-        except Exception as exc:
-            logger.exception("Active probe failed")
-            self._log(treelog.leaf_fail(f"identity probe error: {escape(str(exc))}"))
-        finally:
-            self._probe_task = None
-            try:
-                self.refresh_buttons()
-                self._sync_bindings()
-                self.query_one("#router", RouterEndpoint).update(**self._router_values())
-            except Exception:
-                pass
-
-    def _log_identity_details(self, ap: AccessPoint) -> None:
-        details = fm.router_identity_details(ap)
-        if details:
-            self._log_identity_details_text(details)
-
-    def _log_identity_details_text(self, details: str) -> None:
-        self._log("[bold]Router identity[/bold]")
-        lines = [line for line in details.splitlines() if line]
-        for i, line in enumerate(lines):
-            connector = treelog.leaf if i == len(lines) - 1 else treelog.branch
-            self._log(connector(line))
 
     # ----- command-bar (footer hotkeys) --------------------------------------
 

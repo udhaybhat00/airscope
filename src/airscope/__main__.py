@@ -295,7 +295,26 @@ def main() -> None:
     if args.quiet:
         cli_log_level = "quiet"
 
+    _print_startup_banner()
     AirscopeApp(cli_log_level=cli_log_level).run()
+
+
+def _print_startup_banner() -> None:
+    """ANSI-colored startup banner printed before the TUI opens."""
+    import time
+    from airscope import __version__
+    mint = "\033[38;2;125;240;196m"
+    cyan = "\033[38;2;90;200;250m"
+    dim = "\033[2m"
+    reset = "\033[0m"
+    lines = [
+        f"{mint}airscope{reset}",
+        f"{dim}{__version__}{reset}",
+        f"{cyan}wireless auditor{reset}",
+    ]
+    for line in lines:
+        print(line)
+        time.sleep(0.3)
 
 
 if __name__ == "__main__":

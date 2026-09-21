@@ -212,11 +212,22 @@ class ScannerView(Screen):
 
     CSS = """
     ScannerView #scan-status { height: 1; background: $surface; }
+    ScannerView #freeze-banner {
+        height: 1; background: $accent; color: $background;
+        content-align: center middle; text-style: bold;
+    }
+    ScannerView #preview-strip {
+        height: 3; border: round $primary;
+        background: $surface; padding: 0 1;
+    }
+    ScannerView Button:hover {
+        background: $primary 18%;
+    }
     """
 
     BINDINGS = [
         Binding("q", "app.quit", "Quit", show=True),
-        Binding("f", "focus_filter", "Filter", show=True),
+        Binding("f", "toggle_freeze", "Freeze", show=True),
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("v", "open_vault", "Vault", show=True),
         Binding("l", "toggle_log", "Log", show=True),
@@ -231,26 +242,22 @@ class ScannerView(Screen):
         Binding("B", "batch_stop", "Stop batch", show=False),
     ]
 
-    # (column_key, display_label). Order here = on-screen order.
+    # (column_key, display_label). BEACONS removed.
     _COLUMNS = [
         ("signal", "SIG"),
         ("ssid", "SSID"),
         ("channel", "CH"),
         ("encryption", "ENC"),
         ("wps", "WPS SETUP VULN"),
-        ("clients", "📱 CLIENTS"),
-        ("beacons", "BEACONS"),
+        ("clients", "CLIENTS"),
         ("identity", "VENDOR/ID"),
     ]
 
     # Columns whose values are right-aligned in display.
-    _RIGHT_ALIGNED = {"ssid", "channel", "signal", "beacons", "clients"}
+    _RIGHT_ALIGNED = {"ssid", "channel", "signal", "clients"}
 
     # Columns whose values are numeric for sorting.
-    _NUMERIC_COLS = {"channel", "signal", "beacons", "clients"}
-
-    # How long to flash the BEACONS cell when a beacon arrives.
-    BEACON_FLASH_S = 0.2
+    _NUMERIC_COLS = {"channel", "signal", "clients"}
 
     def __init__(self):
         super().__init__()
@@ -262,20 +269,17 @@ class ScannerView(Screen):
         self._channel_filter: Optional[List[int]] = None
         self._scan_filter: ScanFilter = ScanFilter()
         self._events = CaptureEventDetector(granular_eapol=False)
-        # Per-BSSID prev-beacon-count + flash-deadline for "beacon arrived"
-        # cell highlight.
         self._prev_beacons: Dict[str, int] = {}
         self._beacon_flash_until: Dict[str, float] = {}
-        # Per-BSSID dynamic row state.
         self._row_states: Dict[str, _APRowState] = {}
-        # WPS PBC auto-invade. ON by default. The enabled flag lives on the app
-        # (app.pbc_enabled). Watcher + capturing serialization stay Scanner-local.
         self._pbc_watcher = PbcWatcher()
-        self._pbc_capturing = False          # serialize: one invade at a time
-        # Batch queue: bssids marked with Space, attacked with B.
+        self._pbc_capturing = False
         self._marked: set[str] = set()
         self._batch_running = False
         self._batch_runner = None
+        self._frozen: bool = False
+        self._frozen_ap: Optional[AccessPoint] = None
+        self._prev_cursor = None
 
     # ----- Compose / mount ---------------------------------------------------
 
@@ -285,12 +289,13 @@ class ScannerView(Screen):
         supported = list(array.supported_channels) if array else []
         with Vertical():
             yield FilterBar(supported)
+            yield Label("", id="freeze-banner")
             table = _APScanTable(cursor_type="row", id="ap-table")
             for key, label in self._COLUMNS:
-                # Reserve 2 chars in every header to account for sort indicator
                 table.add_column(label + "  ", key=key)
             yield table
-            yield Label("[dim]○ waiting for interface[/dim]", id="scan-status")
+            yield Label("", id="preview-strip")
+            yield Label("[dim]waiting for interface[/dim]", id="scan-status")
             yield SelectableRichLog(id="system-log", markup=True, highlight=True)
         yield Footer()
 
@@ -391,14 +396,6 @@ class ScannerView(Screen):
             is_stale = age > STALE_DURATION_S
             n_cli = client_counts.get(ap.bssid, 0)
 
-            # Beacon-arrival flash: bump the deadline when beacon count changes.
-            prev = self._prev_beacons.get(ap.bssid)
-            if prev is not None and ap.beacons > prev:
-                self._beacon_flash_until[ap.bssid] = now + self.BEACON_FLASH_S
-            self._prev_beacons[ap.bssid] = ap.beacons
-            flash_bacon = now < self._beacon_flash_until.get(ap.bssid, 0.0)
-
-            shown_beacons = ap.beacons
             chips_markup = self._ssid_chips_markup(ap)
             enc_markup = format_encryption_markup(ap, muted=self._theme_fg)
             ident_summary = ap.identity.summary
@@ -408,10 +405,10 @@ class ScannerView(Screen):
                 self.ap_cache[ap.bssid] = ap
                 self._row_states[ap.bssid] = _APRowState(
                     signal=ap.signal,
-                    beacons=shown_beacons,
+                    beacons=0,
                     clients=n_cli,
                     is_stale=is_stale,
-                    flash=flash_bacon,
+                    flash=False,
                     wps=ap.wps,
                     wps_locked=ap.wps_locked,
                     ssid=ap.ssid,
@@ -423,7 +420,6 @@ class ScannerView(Screen):
                 row_cells = [
                     self._render_cell(
                         ap, col_k, is_stale, n_cli=n_cli,
-                        flash_bacon=flash_bacon, shown_beacons=shown_beacons,
                     )
                     for col_k, _ in self._COLUMNS
                 ]
@@ -431,7 +427,6 @@ class ScannerView(Screen):
             else:
                 self.ap_cache[ap.bssid] = ap
 
-                # Decloak event: already logged here.
                 if not prev_state.ssid and ap.ssid:
                     self._write_log(
                         Text.from_markup(
@@ -444,9 +439,7 @@ class ScannerView(Screen):
                 if prev_state.is_stale != is_stale:
                     prev_state.is_stale = is_stale
                     prev_state.signal = ap.signal
-                    prev_state.beacons = shown_beacons
                     prev_state.clients = n_cli
-                    prev_state.flash = flash_bacon
                     prev_state.wps = ap.wps
                     prev_state.wps_locked = ap.wps_locked
                     prev_state.ssid = ap.ssid
@@ -457,7 +450,6 @@ class ScannerView(Screen):
                     for col_k, _ in self._COLUMNS:
                         cell = self._render_cell(
                             ap, col_k, is_stale, n_cli=n_cli,
-                            flash_bacon=flash_bacon, shown_beacons=shown_beacons,
                         )
                         table.update_cell(ap.bssid, col_k, cell)
                 else:
@@ -475,14 +467,6 @@ class ScannerView(Screen):
                     if prev_state.signal != ap.signal:
                         prev_state.signal = ap.signal
                         table.update_cell(ap.bssid, "signal", self._render_cell(ap, "signal", is_stale))
-
-                    if prev_state.beacons != shown_beacons or prev_state.flash != flash_bacon:
-                        prev_state.beacons = shown_beacons
-                        prev_state.flash = flash_bacon
-                        table.update_cell(
-                            ap.bssid, "beacons",
-                            self._render_cell(ap, "beacons", is_stale, flash_bacon=flash_bacon, shown_beacons=shown_beacons),
-                        )
 
                     if prev_state.clients != n_cli:
                         prev_state.clients = n_cli
@@ -510,6 +494,7 @@ class ScannerView(Screen):
             self._apply_sort(scroll_to_cursor=False)
 
         self._update_scan_status()
+        self._auto_freeze_on_cursor()
 
     def _update_scan_status(self) -> None:
         """One-row strip under the table: counts, filter, and sort state."""
@@ -523,15 +508,34 @@ class ScannerView(Screen):
         sort_label = {
             "signal": "signal strength", "ssid": "name", "channel": "channel",
             "encryption": "encryption", "wps": "WPS", "clients": "client count",
-            "beacons": "beacon count", "identity": "vendor",
+            "identity": "vendor",
         }.get(sort_key, sort_key)
-        parts = [f"● Scanning · {len(self.ap_cache)} networks found · {n_cli} devices"]
+        parts = [f"Scanning - {len(self.ap_cache)} networks - {n_cli} devices"]
         if self._marked:
             parts.append(f"{len(self._marked)} marked")
         if filt.text or filt.encryption is not EncryptionFilter.ALL:
             parts.append(f"filter:{filt.text or '*'}/{filt.encryption.value}")
         parts.append(f"sorted by {sort_label}")
-        strip.update(" · ".join(parts))
+        if self._frozen:
+            parts.append("FROZEN")
+        strip.update(" - ".join(parts))
+
+    def _auto_freeze_on_cursor(self) -> None:
+        """Auto-freeze when the cursor moves (keyboard navigation)."""
+        try:
+            table = self.query_one("#ap-table", DataTable)
+            cursor = table.cursor_coordinate
+        except Exception:
+            return
+        if self._prev_cursor is not None and cursor != self._prev_cursor:
+            if not self._frozen:
+                self._frozen = True
+                ap = self._selected_ap()
+                if ap:
+                    self._frozen_ap = ap
+                    self._update_preview_strip(ap)
+                    self._update_freeze_banner(True)
+        self._prev_cursor = cursor
 
     def _evict_expired_aps(self) -> None:
         if not self.app.array:
@@ -558,8 +562,6 @@ class ScannerView(Screen):
             for mac in orphans:
                 self.app.array.clients.pop(mac, None)
         self.ap_cache.pop(bssid, None)
-        self._prev_beacons.pop(bssid, None)
-        self._beacon_flash_until.pop(bssid, None)
         self._row_states.pop(bssid, None)
         self._marked.discard(bssid)
         try:
@@ -580,30 +582,25 @@ class ScannerView(Screen):
             cell = self._ssid_cell(ap)
             if is_stale:
                 cell.stylize("dim")
-                cell.append(" · not seen recently", style="dim")
+                cell.append(" - not seen recently", style="dim")
             return cell
         if col_key == "channel":
             return Text(str(ap.channel), justify="right", style=f"{dim}{fg}")
         if col_key == "signal":
             return Text(f"{signal_tier(ap.signal)} {ap.signal} dBm", justify="right", style=f"{dim}{fg}")
-        if col_key == "beacons":
-            count = ap.beacons if shown_beacons is None else shown_beacons
-            style = f"{dim}{fg} bold" if flash_bacon else f"{dim}{fg}"
-            return Text(str(count), justify="right", style=style)
         if col_key == "clients":
             return Text(str(n_cli) if n_cli else "", justify="right", style=f"{dim}{fg}")
         if col_key == "encryption":
             cell = Text.from_markup(format_encryption_markup(ap, muted=fg), emoji=False, style=fg)
-            # Append plain-English encryption suffix
             enc_type = EncryptionType.from_ap(ap)
             _ENC_SUFFIX = {
-                EncryptionType.WPA2: " · Password protected",
-                EncryptionType.WPA1: " · Password protected",
-                EncryptionType.WEP: " · Weak encryption",
-                EncryptionType.OPEN: " · No password",
-                EncryptionType.WPA3: " · Modern security",
-                EncryptionType.WPA3_TRANSITION: " · Mixed mode",
-                EncryptionType.OWE: " · Open (enhanced)",
+                EncryptionType.WPA2: " - Password protected",
+                EncryptionType.WPA1: " - Password protected",
+                EncryptionType.WEP: " - Weak encryption",
+                EncryptionType.OPEN: " - No password",
+                EncryptionType.WPA3: " - Modern security",
+                EncryptionType.WPA3_TRANSITION: " - Mixed mode",
+                EncryptionType.OWE: " - Open (enhanced)",
             }
             suffix = _ENC_SUFFIX.get(enc_type, "")
             if suffix:
@@ -765,6 +762,8 @@ class ScannerView(Screen):
     # ----- Sort --------------------------------------------------------------
 
     def _should_sort(self) -> bool:
+        if self._frozen:
+            return False
         delay = Config.scanner_sort_delay
         if delay < 0:
             return False
@@ -819,11 +818,6 @@ class ScannerView(Screen):
                 sentinel = 1 if reverse else 0
                 return (sentinel, ch, sec_sig, bssid)
 
-            if sort_key == "beacons":
-                bc = ap.beacons if ap else 0
-                sentinel = 1 if reverse else 0
-                return (sentinel, bc, sec_sig, bssid)
-
             if sort_key == "clients":
                 state = self._row_states.get(bssid)
                 cli = state.clients if state else 0
@@ -864,9 +858,50 @@ class ScannerView(Screen):
 
     # ----- Actions -----------------------------------------------------------
 
+    def action_toggle_freeze(self) -> None:
+        """Toggle FREEZE mode: pause auto-sort and show preview of selected AP."""
+        self._frozen = not self._frozen
+        if self._frozen:
+            ap = self._selected_ap()
+            if ap:
+                self._frozen_ap = ap
+                self._update_preview_strip(ap)
+                self._update_freeze_banner(True)
+            else:
+                self._frozen = False
+        else:
+            self._frozen_ap = None
+            self._update_freeze_banner(False)
+            self._clear_preview_strip()
+
     def action_toggle_log(self) -> None:
         log_widget = self.query_one("#system-log")
         log_widget.display = not log_widget.display
+
+    def _update_freeze_banner(self, frozen: bool) -> None:
+        banner = self.query_one("#freeze-banner", Label)
+        if frozen:
+            banner.update("[bold]FREEZE MODE[/bold] - auto-sort paused")
+            banner.display = True
+        else:
+            banner.display = False
+
+    def _update_preview_strip(self, ap: AccessPoint) -> None:
+        strip = self.query_one("#preview-strip", Label)
+        enc = format_encryption_markup(ap, muted=self._theme_fg)
+        sig = f"{signal_tier(ap.signal)} {ap.signal} dBm"
+        ssid = ap.ssid or "<Hidden>"
+        strip.update(
+            f"[bold]{ssid}[/bold]  "
+            f"[dim]CH {ap.channel}[/dim]  "
+            f"{enc}  "
+            f"{sig}  "
+            f"[dim]{ap.bssid}[/dim]"
+        )
+
+    def _clear_preview_strip(self) -> None:
+        strip = self.query_one("#preview-strip", Label)
+        strip.update("")
 
     # ----- Batch queue (Space marks, B attacks marked, Shift+B stops) --------
 
@@ -1172,6 +1207,9 @@ class ScannerView(Screen):
         bssid = event.row_key.value
         target_ap = self.ap_cache.get(bssid)
         if target_ap:
+            if self._frozen:
+                self._frozen_ap = target_ap
+                self._update_preview_strip(target_ap)
             if self.app.array:
                 await self.app.array.stop_hopping()
             self.app.target_ap = target_ap

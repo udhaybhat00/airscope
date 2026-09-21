@@ -1,7 +1,6 @@
 import functools
 import logging
 import sys
-from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -14,7 +13,6 @@ from rich.text import Text
 
 from typing import TYPE_CHECKING, Optional
 
-from airscope.ui.ansi_art import make_black_transparent, recolor_logo
 from airscope.ui.screens.setup_error import SetupErrorDialog
 from airscope.device.manager import Status
 
@@ -28,6 +26,25 @@ logger = logging.getLogger(__name__)
 _DUP_SUFFIX = " #{n}"
 # A left buffer so chipset names don't butt against the list edge. Widen here for more indent.
 _LEFT_MARGIN = " "
+
+
+class _PulsingDot(Static):
+    """A pulsing dot animation for status indicators."""
+    _phase: float = 0.0
+    _chars = ["\u25cf", "\u25cb", "\u25cb"]  # filled circle, open circle, open circle
+
+    def on_mount(self) -> None:
+        self.set_interval(0.5, self._tick)
+        self._repaint()
+
+    def _tick(self) -> None:
+        self._phase = (self._phase + 0.33) % 1.0
+        self._repaint()
+
+    def _repaint(self) -> None:
+        idx = int(self._phase * 3) % 3
+        char = self._chars[idx]
+        self.update(Text(char, style="bold $primary"))
 
 
 def _alpha_head(chipset: str) -> str:
@@ -121,19 +138,16 @@ def _chipset_bands(chipset: str) -> Optional[tuple]:
     return None
 
 
-def load_logo() -> Text:
-    """Load the ANSI logo from assets."""
-    logo_path = Path(__file__).parent.parent / "assets" / "logo_sm.ans"
-    try:
-        if logo_path.exists():
-            return make_black_transparent(Text.from_ansi(logo_path.read_text(encoding="utf-8")))
-    except Exception:
-        pass
-
-    # Fallback
-    return Text.from_markup("[bold]Airscope[/bold]\n[dim]// Wireless Auditor[/dim]")
-
-LOGO = load_logo()
+def _wordmark() -> Text:
+    """3-line wordmark: AIRSCOPE / version / tagline."""
+    from airscope import __version__
+    t = Text(no_wrap=True)
+    t.append("AIRSCOPE", style="bold")
+    t.append("\n")
+    t.append(f"v{__version__}", style="dim")
+    t.append("\n")
+    t.append("wireless auditor", style="dim italic")
+    return t
 
 class SplashView(Screen):
     """Splash + device picker: the logo, the list of live cards, Start and Uninstall buttons. START
@@ -149,6 +163,9 @@ class SplashView(Screen):
     ]
 
     CSS = """
+    SplashView #ascii-art { content-align: center middle; margin-bottom: 1; }
+    SplashView #status-row { align: center middle; height: auto; }
+    SplashView #status-dot { width: 3; content-align: center middle; }
     SplashView #device-list { border: round $primary; }
     SplashView #device-list ListItem.-highlight {
         border-left: solid $primary;
@@ -192,21 +209,18 @@ class SplashView(Screen):
                 yield Label("[bold]Choose your Wi-Fi adapter to get started[/bold]",
                             id="heading-label")
             with Center():
-                yield Label("[dim]○ Scanning for compatible hardware…[/dim]", id="status-label")
+                with Horizontal(id="status-row"):
+                    yield _PulsingDot(id="status-dot")
+                    yield Label("[dim]Scanning for compatible hardware...[/dim]", id="status-label")
             with Center():
-                # Persistent failure line. render_devices only touches #status-label, so an error
-                # parked here survives the next device refresh (the status line gets overwritten).
                 yield Label("", id="error-label")
             with Center():
                 with Horizontal(id="device-row"):
-                    # One card: a plain highlighted list. 2+ cards: a checkbox list (default all
-                    # checked) so the user picks the subset to bring up. render_devices shows one.
                     yield ListView(id="device-list")
                     yield SelectionList(id="device-select")
             with Center():
                 with Horizontal(id="button-row"):
                     yield Button("Start Scanning", id="start-btn", variant="success")
-                    # Reverses airscope's driver/access changes for the highlighted card.
                     yield Button("Uninstall", id="uninstall-btn", variant="error")
                     yield Button("Captured Results", id="vault-btn")
                     yield Button("Settings", id="prefs-btn")
@@ -224,12 +238,10 @@ class SplashView(Screen):
                 self.query_one("#device-select", SelectionList))
 
     def _logo(self) -> Text:
-        theme = self.app.current_theme
-        return recolor_logo(LOGO, theme.variables, dark=theme.dark)
+        return _wordmark()
 
     def refresh_theme_art(self) -> None:
-        logo = self.query_one("#ascii-art", Static)
-        logo.update(self._logo())
+        pass
 
     def _enter_scanning_mode(self) -> None:
         """The 'pick a card' resting state."""
@@ -245,17 +257,16 @@ class SplashView(Screen):
         multi_list.display = False
         self.query_one("#start-btn", Button).disabled = True
         self.query_one("#uninstall-btn", Button).disabled = True
-        self.query_one("#status-label", Label).update("[dim]○ Scanning for compatible hardware…[/dim]")
+        self.query_one("#status-label", Label).update("[dim]Scanning for compatible hardware...[/dim]")
+        self.query_one("#status-dot", _PulsingDot).display = True
 
     async def on_mount(self) -> None:
         uninstall = self.query_one("#uninstall-btn", Button)
         if sys.platform == "darwin":
-            # macOS has no install step, so there's nothing to uninstall.
             uninstall.display = False
         else:
             hint = "the WinUSB driver" if sys.platform == "win32" else "the udev/modprobe rules"
             uninstall.tooltip = f"Uninstall {hint} for the highlighted card"
-        self.app.theme_changed_signal.subscribe(self, lambda _theme: self.refresh_theme_art())
         self._enter_scanning_mode()
 
     def reset_for_reentry(self) -> None:
@@ -298,12 +309,15 @@ class SplashView(Screen):
             status.update(self._ready_prompt())
             start_btn.disabled = False
             uninstall_btn.disabled = False
+            try:
+                self.query_one("#status-dot", _PulsingDot).display = False
+            except Exception:
+                pass
             if multi:
                 if multi_list.highlighted is None:
                     multi_list.highlighted = 0
                 multi_list.focus()
             else:
-                # clear() reset index to None; re-arm the highlight so START has a target.
                 if single_list.index is None:
                     single_list.index = 0
                 single_list.focus()

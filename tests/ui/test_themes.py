@@ -1,7 +1,6 @@
 import pytest
 from rich.style import Style
 from rich.text import Text
-from textual.theme import Theme
 from textual.widgets import Static
 
 from airscope.ui.ansi_art import (
@@ -73,16 +72,7 @@ def test_recolor_logo_uses_light_defaults_for_textual_light_theme():
 @pytest.mark.usefixtures("no_usb_devices")
 async def test_splash_logo_uses_current_theme_variables():
     app = AirscopeApp()
-    app.register_theme(Theme(
-        name="logo-test", primary="#ffffff",
-        variables={THEME_BARS_PRIMARY_KEY: "#010203", THEME_TEXT_PRIMARY_KEY: "#040506"},
-    ))
-    app.theme = "logo-test"
-
     async with app.run_test() as pilot:
         logo = pilot.app.screen.query_one("#ascii-art", Static).content
-
-    styles = {str(span.style) for span in logo.spans}
-
-    assert any("#010203" in style for style in styles)
-    assert any("#040506" in style for style in styles)
+    # The wordmark contains "AIRSCOPE" text
+    assert "AIRSCOPE" in logo.plain

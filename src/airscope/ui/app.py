@@ -94,7 +94,7 @@ class AirscopeApp(App):
     DataTable .datatable--header { color: $secondary; text-style: bold; }
     DataTable .datatable--cursor { background: $primary 20%; }
     RichLog, SelectableRichLog {
-        height: 8;
+        height: 4;
         border: round $surface;
         border-top: solid $primary;
     }
@@ -102,9 +102,16 @@ class AirscopeApp(App):
         margin-right: 1;
         min-width: 12;
     }
+    Button:hover {
+        background: $primary 18%;
+        color: $foreground;
+    }
     Button.-primary { background: $primary; color: $background; }
+    Button.-primary:hover { background: $primary 80%; }
     Button.-warning { background: $warning; color: $background; }
+    Button.-warning:hover { background: $warning 80%; }
     Button.-error { background: $error; color: $background; }
+    Button.-error:hover { background: $error 80%; }
     /* App CSS outranks a widget's DEFAULT_CSS, so lower the global min-width for the
        EvilTwin modal's compact BSSID buttons from here, not the modal. */
     EvilTwinInputModal #bssid-btns Button { min-width: 4; }
