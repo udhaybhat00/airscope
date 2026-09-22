@@ -75,7 +75,7 @@ async def test_splash_logo_uses_current_theme_variables():
     app = AirscopeApp()
     app.register_theme(Theme(
         name="logo-test", primary="#ffffff",
-        variables={THEME_BARS_PRIMARY_KEY: "#010203", THEME_TEXT_PRIMARY_KEY: "#040506"},
+        variables={"primary": "#010203", "foreground": "#040506", "muted": "#070809"},
     ))
     async with app.run_test() as pilot:
         app.theme = "logo-test"

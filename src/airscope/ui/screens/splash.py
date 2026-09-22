@@ -1,7 +1,6 @@
 import functools
 import logging
 import sys
-from pathlib import Path
 from textual.app import ComposeResult
 from textual.binding import Binding
 from textual.screen import Screen
@@ -14,9 +13,9 @@ from rich.text import Text
 
 from typing import TYPE_CHECKING, Optional
 
-from airscope.ui.ansi_art import make_black_transparent, recolor_logo
 from airscope.ui.screens.setup_error import SetupErrorDialog
 from airscope.device.manager import Status
+from airscope.tokens import NOIR
 
 if TYPE_CHECKING:
     from airscope.ui.app import AirscopeApp
@@ -27,18 +26,42 @@ _DUP_SUFFIX = " #{n}"
 _LEFT_MARGIN = " "
 
 
-def _load_logo() -> Text:
-    """Load the ANSI logo from assets."""
-    logo_path = Path(__file__).parent.parent / "assets" / "logo_sm.ans"
-    try:
-        if logo_path.exists():
-            return make_black_transparent(Text.from_ansi(logo_path.read_text(encoding="utf-8")))
-    except Exception:
-        pass
-    return Text.from_markup("[bold]AIRSCOPE[/bold]\n[dim]wireless auditor[/dim]")
+def _build_logo() -> Text:
+    """Build a clean, modern logo as a Rich Text object."""
+    primary = NOIR["primary"]
+    foreground = NOIR["foreground"]
+    muted = NOIR["muted"]
 
+    text = Text(justify="center", no_wrap=True)
 
-_LOGO = _load_logo()
+    # Signal/radar wave icon
+    waves = [
+        "                 * * * * * *",
+        "             *               *",
+        "         *     * * * * *     *",
+        "     *                           *",
+        "         *     *         *",
+        "             *               *",
+        "                 * * * * *",
+    ]
+    for line in waves:
+        text.append(line + "\n", style=f"bold {primary}")
+
+    # Blank line
+    text.append("\n")
+
+    # Main title - wide spaced for legibility
+    title = "A   I   R   S   C   O   P   E"
+    text.append("  " + title + "\n", style=f"bold {foreground}")
+
+    # Thin separator
+    sep = "\u2500" * len(title)
+    text.append("  " + sep + "\n", style=f"dim {muted}")
+
+    # Tagline
+    text.append("  wireless auditor", style=f"italic {muted}")
+
+    return text
 
 
 class _PulsingDot(Static):
@@ -228,7 +251,29 @@ class SplashView(Screen):
 
     def _logo(self) -> Text:
         theme = self.app.current_theme
-        return recolor_logo(_LOGO, theme.variables, dark=theme.dark)
+        variables = theme.variables
+        primary = variables.get("primary", NOIR["primary"])
+        foreground = variables.get("foreground", NOIR["foreground"])
+        muted = variables.get("muted", NOIR["muted"])
+        text = Text(justify="center", no_wrap=True)
+        waves = [
+            "                 * * * * * *",
+            "             *               *",
+            "         *     * * * * *     *",
+            "     *                           *",
+            "         *     *         *",
+            "             *               *",
+            "                 * * * * *",
+        ]
+        for line in waves:
+            text.append(line + "\n", style=f"bold {primary}")
+        text.append("\n")
+        title = "A   I   R   S   C   O   P   E"
+        text.append("  " + title + "\n", style=f"bold {foreground}")
+        sep = "\u2500" * len(title)
+        text.append("  " + sep + "\n", style=f"dim {muted}")
+        text.append("  wireless auditor", style=f"italic {muted}")
+        return text
 
     def refresh_theme_art(self) -> None:
         logo = self.query_one("#ascii-art", Static)
