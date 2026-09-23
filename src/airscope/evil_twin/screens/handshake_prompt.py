@@ -1,8 +1,8 @@
 """Textual modal screen for handshake detection prompt."""
 
 from textual.screen import ModalScreen
-from textual.widgets import Static, OptionList
-from textual.containers import Vertical
+from textual.widgets import Static, Button
+from textual.containers import Vertical, Horizontal
 from pathlib import Path
 
 
@@ -36,8 +36,14 @@ class HandshakePromptScreen(ModalScreen[int]):
         color: $muted;
         margin-bottom: 1;
     }
-    OptionList {
-        height: 5;
+    #btn-row {
+        height: auto;
+        align: center middle;
+        margin-top: 1;
+    }
+    #btn-row Button {
+        margin: 0 1;
+        min-width: 14;
     }
     #help {
         color: $muted;
@@ -47,10 +53,7 @@ class HandshakePromptScreen(ModalScreen[int]):
     """
 
     BINDINGS = [
-        ("1", "select(0)", "Use existing"),
-        ("2", "select(1)", "Custom path"),
-        ("3", "select(2)", "Capture new"),
-        ("escape", "select(-1)", "Cancel"),
+        ("escape", "cancel", "Cancel"),
     ]
 
     def __init__(self, existing_path: Path):
@@ -64,25 +67,26 @@ class HandshakePromptScreen(ModalScreen[int]):
         mtime_str = datetime.fromtimestamp(self._mtime).strftime('%Y-%m-%d %H:%M')
 
         with Vertical(id="dialog"):
-            yield Static("⚡ Handshake Already Exists", id="title")
+            yield Static("Handshake Already Exists", id="title")
             yield Static(f"File: {self._path.name}", id="path")
             yield Static(
                 f"Captured: {mtime_str}  |  Size: {self._size/1024:.1f} KB",
                 id="info"
             )
-            yield OptionList(
-                OptionList.Option("  ✓ Use this handshake (skip Step 1)", id="0"),
-                OptionList.Option("  📂 Provide custom handshake path", id="1"),
-                OptionList.Option("  🔄 Capture new handshake", id="2"),
-                highlight=True,
-            )
-            yield Static("↑↓ select  |  1/2/3 shortcut  |  Esc cancel", id="help")
+            with Horizontal(id="btn-row"):
+                yield Button("Use existing", variant="primary", id="btn-use")
+                yield Button("Custom path", variant="default", id="btn-custom")
+                yield Button("Capture new", variant="default", id="btn-new")
+            yield Static("1/2/3 shortcut  |  Esc cancel", id="help")
 
-    def on_option_list_highlighted(self, event: OptionList.Highlighted):
-        pass
+    def on_button_pressed(self, event: Button.Pressed):
+        bid = event.button.id
+        if bid == "btn-use":
+            self.dismiss(0)
+        elif bid == "btn-custom":
+            self.dismiss(1)
+        elif bid == "btn-new":
+            self.dismiss(2)
 
-    def action_select(self, value: int):
-        self.dismiss(value)
-
-    def on_option_list_option_selected(self, event: OptionList.OptionSelected):
-        self.dismiss(int(event.option.id))
+    def action_cancel(self):
+        self.dismiss(-1)
