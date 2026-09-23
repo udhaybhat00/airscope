@@ -1,159 +1,271 @@
-# airscope
-
-![build](https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml/badge.svg)
-![version](https://img.shields.io/github/v/release/udhaybhat00/airscope)
-![license](https://img.shields.io/badge/license-GPL--2.0-blue)
-![python](https://img.shields.io/badge/python-%3E%3D3.11-blue)
-
-> A standalone USB Wi-Fi auditor for Linux, Windows, and macOS.
-
-> Wireless penetration testing toolkit: WPA/WPA2 handshake and PMKID capture, WPS PixieDust and PIN attacks, WPA3 SAE capture, EvilTwin downgrade, and hashcat-powered password cracking — in a terminal UI and a local web dashboard.
-
 <p align="center">
-  <img src="assets/demo-tour.gif" alt="airscope Wi-Fi security auditor demo: live wireless network scanner, WPA handshake capture, WPS attack, hashcat password cracking, and HTML security report" width="800">
+  <img src="assets/demo-tour.gif" alt="airscope demo" width="800">
 </p>
 
-> *At least* one of the [supported USB adapters](docs/SUPPORTED-HARDWARE.md) is **required** for live captures — but you can tour the whole UI with no hardware (below).
+<h1 align="center">airscope</h1>
 
-## Getting started (no experience needed)
+<p align="center">
+  <strong>Cross-platform USB Wi-Fi security auditor — pure Python, zero kernel drivers</strong>
+</p>
 
-The easiest way needs **no installs and no terminal knowledge**. Download one file, open it, and you're looking at the app in under a minute.
+<p align="center">
+  <a href="https://github.com/udhaybhat00/airscope/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPL--2.0-blue" alt="License"></a>
+  <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
+  <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-brightgreen" alt="Platform">
+  <a href="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml"><img src="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
+  <img src="https://img.shields.io/badge/tests-2982+-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/pure-Python-orange" alt="Pure Python">
+</p>
 
-There are **two ways to use it** — pick one:
-- **Terminal app** (default): just run the file. Menus and tables right inside your terminal.
-- **Browser dashboard**: run the file with `--web --demo` after it. A webpage opens automatically.
+<p align="center">
+  airscope is a userland 802.11 security auditor that talks directly to USB wireless adapters via PyUSB. No kernel drivers, no monitor mode, no aircrack-ng — just Python, a Textual TUI, and a supported USB adapter.
+</p>
 
-> **What's a Terminal?** It's the app on your computer where you type text commands instead of clicking buttons — called Terminal on Mac, Command Prompt or PowerShell on Windows. You only need it for two copy-paste steps on Mac/Linux below; Windows needs none at all.
+---
 
-### Windows (no terminal needed)
+## Table of Contents
 
-1. Go to the [**Releases page**](https://github.com/udhaybhat00/airscope/releases/latest) and download **`airscope-windows-x64.exe`**.
-2. **Double-click** the downloaded file. This opens the **terminal app**.
-3. Windows will likely show a blue box saying *"Windows protected your PC"*. This appears because the app is **unsigned** (signing certificates cost hundreds of dollars a year — the code itself is open for anyone to inspect). Click **More info**, then **Run anyway**.
-4. A black window opens and stays open — that's the app running. Leave it alone.
+- [Demo](#demo)
+- [Why airscope?](#why-airscope)
+- [Features](#features)
+- [Architecture](#architecture)
+- [Supported Hardware](#supported-hardware)
+- [Installation](#installation)
+- [Usage](#usage)
+- [EvilTwin Deep-Dive](#eviltwin-deep-dive)
+- [Project Structure](#project-structure)
+- [Testing](#testing)
+- [Configuration](#configuration)
+- [Troubleshooting](#troubleshooting)
+- [Roadmap](#roadmap)
+- [Contributing](#contributing)
+- [License & Legal](#license--legal)
+- [Acknowledgments](#acknowledgments)
 
-> First launch takes ~30 seconds while the app unpacks itself — be patient, the window looks frozen meanwhile. Later launches are instant.
+---
 
-> If double-clicking seemingly does nothing: check the taskbar for the blue SmartScreen prompt hiding behind your browser window. It's almost always waiting there for the *More info → Run anyway* clicks.
+## Demo
 
-> Want the browser dashboard on Windows instead? Open Command Prompt in the download folder and run `airscope-windows-x64.exe --web --demo`.
+<p align="center">
+  <img src="assets/demo-tour.gif" alt="airscope: live scanner, WPA handshake capture, WPS attack, hashcat cracking, and HTML report" width="800">
+</p>
 
-### macOS (two copy-paste commands)
+<p align="center"><em>Scanner → Focus → Attack → Vault — all in the terminal</em></p>
 
-Apple requires apps to be registered with them ("Gatekeeper") or your Mac refuses to open them — same unsigned-app situation as Windows, but Apple doesn't offer a click-through, so there are two commands to paste. Nothing gets installed; they just tell your Mac "I trust this file, run it".
+> Watch the TUI in action: [Video demo coming soon](#)
 
-1. Go to the [**Releases page**](https://github.com/udhaybhat00/airscope/releases/latest) and download **`airscope-macos-universal2`**. Remember which folder it landed in (usually Downloads).
-2. Open **Terminal** (press `Cmd + Space`, type `Terminal`, press Enter) and paste these lines one at a time, pressing Enter after each. If your file isn't in Downloads, replace `~/Downloads` with its folder. The **last line is a choice** — plain terminal app, or browser dashboard:
+---
 
-```bash
-xattr -d com.apple.quarantine ~/Downloads/airscope-macos-universal2
-chmod +x ~/Downloads/airscope-macos-universal2
-~/Downloads/airscope-macos-universal2
-```
+## Why airscope?
 
-or, for the browser dashboard instead:
+- **No kernel drivers** — pure userland PyUSB; no `airmon-ng`, no driver versioning hell
+- **No external tool dependencies** — no aircrack-ng, no hostapd, no dnsmasq, no mdk3. Everything is Python
+- **True cross-platform** — identical codebase on Linux/Windows/macOS; no "only works on Kali" limitation
+- **Single binary** — PyInstaller produces a standalone executable per OS
+- **Textual TUI + Web dashboard** — terminal-native UI with optional browser view
+- **EvilTwin with real-time MIC verification** — WPA3 SAE downgrade that recovers plaintext password without offline cracking
 
-```bash
-~/Downloads/airscope-macos-universal2 --web --demo
-```
+### Comparison
 
-The first line removes Apple's quarantine flag (the "unidentified developer" block), the second makes the file runnable, the third starts it.
+| Feature | airscope | aircrack-ng | airgeddon |
+|---------|----------|-------------|-----------|
+| OS | Linux + Windows + macOS | Linux only | Linux only |
+| Kernel driver required | No | Yes (monitor mode) | Yes |
+| External tools | None | Many (hostapd, dnsmasq, etc.) | Many |
+| TUI | Textual (asyncio) | CLI | CLI + xterm |
+| Web dashboard | Yes | No | No |
+| EvilTwin | Yes (3-step, MIC verify) | Manual | Yes (bash) |
+| WPA3 SAE | Yes (downgrade + MIC) | Partial | No |
+| WPS PixieDust | Yes | Yes (reaver) | No |
+| Single binary | Yes (PyInstaller) | No | No |
+| Python | 3.11+ | C | Bash |
 
-> If your Mac says *"can't be opened because it is from an unidentified developer"*: it means step 1's first command didn't run (or ran in the wrong folder). Re-open Terminal and run the `xattr` line again carefully — watch for typos in the file path.
-
-### Linux (two copy-paste commands)
-
-1. Go to the [**Releases page**](https://github.com/udhaybhat00/airscope/releases/latest) and download **`airscope-linux-x64`** (or `airscope-linux-arm64` on Raspberry Pi / ARM machines).
-2. Open a terminal in the download folder and paste. The **last line is a choice** — plain terminal app, or browser dashboard:
-
-```bash
-chmod +x ./airscope-linux-x64
-./airscope-linux-x64
-```
-
-or, for the browser dashboard instead:
-
-```bash
-./airscope-linux-x64 --web --demo
-```
-
-The first line makes the file runnable, the second starts it.
-
-### After launch (all systems)
-
-**Terminal app** (no flags): you get menus and tables inside your terminal. Plug in a [supported USB adapter](docs/SUPPORTED-HARDWARE.md) and press START to scan for real.
-
-**Browser dashboard** (`--web --demo` flags): a webpage **opens in your browser automatically** — that's the whole interface. If no browser tab appears, go to **http://127.0.0.1:8765/** yourself.
-
-You'll see an amber **DEMO MODE** banner across the top: you're looking at a **simulation**. Nothing on your network is being touched, scanned, or attacked — it's there so you can click through every screen safely. A real scan needs a [supported USB adapter](docs/SUPPORTED-HARDWARE.md) plugged in.
-
-### For developers (from source)
-
-This path needs [`uv`](https://docs.astral.sh/uv/) (a Python installer/manager) — install it first, then **close and reopen your terminal** so it takes effect:
-
-- **macOS / Linux:** `curl -LsSf https://astral.sh/uv/install.sh | sh`
-- **Windows:** `powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"`
-
-Then:
-
-```bash
-git clone https://github.com/udhaybhat00/airscope
-cd airscope
-uv sync --group dev --extra web   # install (editable + dev + web deps)
-uv run airscope --web --demo      # dashboard at http://127.0.0.1:8765/
-```
-
-Got a supported adapter? Plug it in and run `uv run airscope` (terminal UI) or drop `--demo` for the live dashboard.
-
-## Why?
-
-* **Cross-Platform:** Runs identically on Linux, macOS, and Windows.
-* **Driver Heaven:** Ships its own userland wireless stack, so there is no kernel driver versioning hell and no Windows NDIS wall.
-* **Zero Runtime Dependencies:** No external auditor tools — pure Python over PyUSB with a Textual TUI.
+---
 
 ## Features
 
-### Reconnaissance & Analysis
+### Reconnaissance
 
-- **Multi-Card Aggregation:** Capture across multiple adapters at once; pick a dedicated card to inject.
-- **Real-time Scanner:** 2.4 GHz & 5 GHz channel-hopping (split across cards); signal, encryption suites, WPA3/SAE transition modes.
-- **AP & Client Identification:** Vendor fingerprinting; router make/model from WPS beacons.
-- **VAP Decloaking:** Finds hidden networks via BSSID correlation with visible siblings.
-- **Packet Dashboard:** Live beacon, data, injection, and deauth rates.
+- **Real-time scanner** — 2.4 + 5 GHz channel hopping across multiple cards
+- **Multi-card aggregation** — dedicated capture card + injection card
+- **AP & client identification** — vendor fingerprinting, WPS beacon parsing
+- **VAP decloaking** — hidden SSID detection via BSSID correlation
+- **Signal strength metering** — tiered: Excellent / Good / Fair / Weak
 
-### Attacks & Captures
+### Captures
 
-- **WPA/WPA2 Handshakes:** Passive sniffing + targeted deauth; validated pairs exported as `.pcap` / `.hc22000`.
-- **PMKID Harvesting:** Active + passive collection for WPA/WPA2 key material.
-- **EvilTwin WPA3 Downgrade:** Clones the AP and evicts clients to capture handshakes.
-- **WPS Recovery Suite:** PixieDust (offline PIN recovery), PushButton PSK capture, resumable PIN brute-force.
-- **WEP Suite:** ARP replay, ChopChop, fake auth, and PTW key recovery.
-- **Vault Cracking:** Dictionary attacks on captures via hashcat (aircrack-ng fallback), cracked PSKs saved back per AP.
-- **Batch & Headless:** Multi-target queues in the TUI (`Space`/`B`), or `airscope --auto` with JSONL session logs.
-- **Dashboard & Exports:** Local Svelte web UI (scanner, target attacks, vault, batch, reports) plus CSV / Kismet netXML / cracked.txt / HTML reports.
+- **WPA/WPA2 4-way handshake** — passive sniffing + deauth-triggered
+- **PMKID harvesting** — active + passive collection
+- **WPS PushButton PSK capture**
+- **Export formats** — `.pcap`, `.pcapng`, `.hc22000`, `.hccapx`
 
-### Screens
+### Attacks
 
-- **Splash:** Adapter picker with band badges (`2G`/`5G`), START / Uninstall / Vault / Prefs.
-- **Scanner:** Live AP table with tiered signal meter and icon-coded encryption column.
-  `Space` marks targets, `B` batch-attacks the marked set (WPS → PMKID → handshake,
-  strongest first, solved APs skipped), `Shift+B` stops after the current step.
-- **Focus:** Single-target view — packet dashboard, clients, campaign controls, log.
-- **Vault:** Loot manager for captures and recovered credentials. No card needed.
+- **EvilTwin** (3-step: handshake → fake AP + deauth → MIC verification)
+  - Handshake detection prompt (use existing / custom path / capture new)
+  - Userland 802.11 AP (auth, assoc, DHCP, DNS blackhole, TCP/HTTP)
+  - Captive portal (fake router firmware upgrade page)
+  - Cross-platform (macOS / Windows / Linux)
+- **WPS PixieDust** — offline PIN recovery from beacon
+- **WPS PIN brute-force** — resumable
+- **WEP suite** — ARP replay, ChopChop, fake auth, PTW key recovery
+- **Batch "Auto Attack"** — sequential campaigns across multiple targets
 
-### Headless batch mode
+### Analysis & Output
+
+- **Vault** — capture manager, crack progress tracking
+- **Hashcat integration** — offline cracking of captured handshakes
+- **Real-time MIC verification** — WPA3 SAE → plaintext, no offline step
+- **Report export** — CSV, Kismet netXML, cracked.txt, HTML
+- **Log translation** — technical events → plain English, 15+ mappings
+
+### UI / UX
+
+- **Textual TUI** — asyncio-based, 60fps render
+- **Web dashboard** — optional, same data as TUI (`--web`)
+- **Signal Noir theme family** — dark + high-contrast variants
+- **Animated startup banner**
+- **Plain-English attack cards** with descriptions
+- **3-step progress indicator** for EvilTwin
+- **Scanner freeze mode** (`F` key)
+- **Keyboard-first navigation** (all actions bindable)
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────┐
+│ airscope (Python 3.11+, asyncio)                                   │
+│                                                                     │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────────────────┐  │
+│  │ Textual TUI  │  │ Web Dashboard │  │ Report / Vault          │  │
+│  └──────┬───────┘  └──────┬────────┘  └────────────┬────────────┘  │
+│         │                 │                         │               │
+│  ┌──────┴─────────────────┴─────────────────────────┴────────────┐  │
+│  │ Attack Orchestrator (asyncio tasks)                           │  │
+│  │ - Scanner  - EvilTwin  - WPS  - WEP  - Batch                 │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│                             │                                       │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ USB Worker Thread (PyUSB, blocking I/O)                      │  │
+│  │ - RX: 802.11 frame dispatch                                   │  │
+│  │ - TX: priority queue (mgmt > dhcp > http > beacon > deauth)  │  │
+│  │ - Beacon timer (100ms)  - Deauth timer (configurable)        │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│                             │                                       │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ Userland 802.11 Stack (pure Python)                          │  │
+│  │ - Frame crafting (beacon, auth, assoc, deauth, data)         │  │
+│  │ - DHCP server  - DNS blackhole  - TCP/HTTP                   │  │
+│  │ - Handshake parser  - PMKID extractor  - WPS parser          │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│                             │                                       │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ PyUSB → USB Bulk Endpoints → RTL8812AU / RTL8814AU           │  │
+│  │ (userland, no kernel driver)                                  │  │
+│  └───────────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────────┘
+```
+
+### Design Decisions
+
+- **PyUSB over kernel drivers** — cross-platform, no versioning hell, no `modprobe` blacklists
+- **asyncio + dedicated USB thread** — non-blocking TUI, precise frame timing
+- **Textual over curses/rich** — asyncio-native, CSS-like styling, widget tree
+- **Userland AP stack** — no hostapd dependency, full control over 802.11 frames
+
+---
+
+## Supported Hardware
+
+| Adapter | Chipset | 2.4 GHz | 5 GHz | Monitor | AP Mode | Notes |
+|---------|---------|:-------:|:-----:|:-------:|:-------:|-------|
+| Alfa AWUS036ACH | RTL8812AU | ✅ | ✅ | ✅ | ✅ | Recommended |
+| Alfa AWUS036ACM | MT7612U | ✅ | ✅ | ✅ | ✅ | Grade A |
+| Alfa AWUS036ACHM | RTL8821AU | ✅ | ✅ | ✅ | ✅ | Grade A |
+| Alfa AWUS036AXML | MT7921AU | ✅ | ✅ | ✅ | ✅ | Wi-Fi 6 |
+| TP-Link Archer T4U | RTL8812AU | ✅ | ✅ | ✅ | ✅ | Grade A |
+| TP-Link Archer T3U | RTL8821AU | ✅ | ✅ | ✅ | ✅ | Grade A |
+| ASUS BE93 | RTL8922AU | ✅ | ✅ | ✅ | ✅ | Wi-Fi 7 |
+| Netgear A9000 | RTL8814AU | ✅ | ✅ | ⚠️ | ✅ | TX broken |
+| MediaTek MT7925AU | MT7925AU | ✅ | ✅ | ✅ | ✅ | Wi-Fi 6E |
+
+Any RTL8812AU or RTL8814AU-based USB dongle should work. The tool auto-detects by USB VID/PID. Full grading table: [docs/SUPPORTED-HARDWARE.md](docs/SUPPORTED-HARDWARE.md).
+
+---
+
+## Installation
+
+### Prerequisites
+
+- Python 3.11+
+- [uv](https://docs.astral.sh/uv/) package manager
+- Supported USB Wi-Fi adapter (see table above)
+
+### Quick Start
 
 ```bash
-uv run airscope --auto                                   # scan, then attack everything
+git clone https://github.com/udhaybhat00/airscope.git
+cd airscope
+uv sync --group dev && uv run airscope
+```
+
+### Standalone Binary (no Python needed at runtime)
+
+```bash
+uv run pyinstaller airscope.spec --noconfirm --clean
+# Output: dist/airscope (Linux), dist/airscope.exe (Windows), dist/airscope (macOS)
+```
+
+### One-Time Driver Setup (handled in-app)
+
+| OS | What happens | User action |
+|----|-------------|-------------|
+| Linux | udev rule + modprobe blocklist via pkexec | One sudo prompt |
+| macOS | IOKit authorization | Click "Allow" in dialog |
+| Windows | WinUSB driver install via UAC | One UAC prompt |
+
+Undo anytime from Splash → Uninstall, then re-plug the adapter.
+
+---
+
+## Usage
+
+### Step-by-step walkthrough
+
+1. **Launch** → Animated startup banner → Splash screen
+2. **Select adapter** → Pick from detected cards (band badges shown: `2G`/`5G`)
+3. **Press START** → Driver setup (first time only) → Scanner
+4. **Scan** → Live network table (signal, encryption, WPS, clients)
+5. **Select target** → Focus screen (attack cards appear)
+6. **Choose attack** → e.g., EvilTwin
+7. **Step 1:** Handshake capture (or use existing)
+8. **Step 2:** Fake AP + deauth (captive portal active)
+9. **Step 3:** MIC verification → plaintext password
+10. **Review results** → Vault (captures, credentials, reports)
+
+### Keyboard Shortcuts
+
+| Key | Action |
+|-----|--------|
+| `F` | Freeze/unfreeze scanner |
+| `Ctrl+P` | Toggle theme |
+| `Esc` | Back / Cancel / Stop |
+| `Enter` | Select / Confirm |
+| `Space` | Mark target for batch |
+| `B` | Batch-attack marked targets |
+
+### Headless Batch Mode
+
+```bash
+uv run airscope --auto                                    # scan, then attack everything
 uv run airscope --auto --targets HomeNet,aa:bb:cc:dd:ee:ff --scan-secs 15
-uv run airscope --auto --list                            # print APs in range and exit
+uv run airscope --auto --list                             # print APs in range and exit
 uv run airscope --auto --session night1.jsonl --pmkid-timeout 180
 ```
 
-Progress prints to stdout; structured step events land in the JSONL session file.
-Cards needing one-time driver setup must go through the TUI once first.
-
-### Web dashboard
+### Web Dashboard
 
 ```bash
 uv run airscope --web                    # live dashboard at http://127.0.0.1:8765/
@@ -161,78 +273,219 @@ uv run airscope --web --demo             # simulated scan, no hardware needed
 uv run airscope --web --port 9000 --no-browser
 ```
 
-Needs the web extras once: `uv sync --extra web` (or `pip install 'fastapi>=0.115' 'uvicorn[standard]>=0.30'`).
-Scanner, target attacks, vault + cracking, batch queue, and reports — the same
-Signal Noir theme as the TUI. Demo mode is bannered in the terminal and across
-the top of every page, so it can't be mistaken for a real scan.
+Needs the web extras once: `uv sync --extra web`.
 
-## How it compares
+### CLI Flags
 
-| Capability | airscope | aircrack-ng | wifite2 | reaver | bully |
-|---|---|---|---|---|---|
-| WPA/WPA2 handshake capture | ✓ | ✓ | ✓ | — | — |
-| PMKID capture | ✓ | via hcxdumptool | ✓ | — | — |
-| WPA offline crack (built-in path) | ✓ vault+hashcat | ✓ | ✓ | — | — |
-| WPS PixieDust | ✓ (subset of modes) | via reaver/bully | ✓ (via tools) | ✓ | ✓ |
-| WPS online PIN brute-force | ✓ | — | ✓ (via tools) | ✓ | ✓ |
-| WEP attacks | replay/chopchop/PTW (no caffe-latte/hirte) | full set | full set | — | — |
-| WPA3 SAE capture | ✓ passive | via hcxdumptool | fork-only | — | — |
-| EvilTwin | WPA2 downgrade | fake AP primitives | fork: portal | — | — |
-| Enterprise/EAP attacks | ✗ | partial (airbase) | ✗ | — | — |
-| Batch multi-target + headless | ✓ | scripts | ✓ core value | — | — |
-| Windows/macOS support | ✓ | Linux-first | Linux-only | Linux | Linux |
-| Web dashboard | ✓ | ✗ | ✗ | ✗ | ✗ |
-| No monitor-mode setup (userland USB) | ✓ | ✗ | ✗ | ✗ | ✗ |
-| Hardware scope | ~20 USB chipsets | any monitor card | any monitor card | any | any |
-| Reports (CSV/netXML/HTML) | ✓ | csv/netxml | cracked log | ✗ | ✗ |
+| Flag | Description |
+|------|-------------|
+| `--version` | Print version and exit |
+| `--auto` | Headless batch mode |
+| `--list` | Print APs in range and exit |
+| `--targets` | Comma-separated BSSIDs or SSID substrings |
+| `--scan-secs` | Seconds to scan before attacking (default 30) |
+| `--web` | Serve web dashboard |
+| `--port` | Dashboard port (default 8765) |
+| `--demo` | Simulated scan, no hardware |
+| `--session` | JSONL session log path |
+| `--export` | `csv`, `netxml`, `cracked`, `html`, or `all` |
+| `--quiet` | No logs |
+| `--debug` / `--trace` | Verbose logging |
 
-## Install & Run
+---
 
-Requires Python 3.11+ and [`uv`](https://docs.astral.sh/uv/). Works on Kali Linux and any modern distro alongside tools like aircrack-ng, hashcat, and Wireshark (capture files are standard `.pcap` / `.hc22000`).
+## EvilTwin Deep-Dive
 
-```bash
-uv sync --group dev   # install (editable + dev deps)
-uv run airscope       # run
+The EvilTwin is airscope's flagship attack. It creates a rogue access point that mimics a target network, captures the WPA handshake, and verifies the password in real-time.
+
+### 3-Step Flow
+
+```
+┌──────────────────────────────────────────────────────────┐
+│ Step 1: Handshake Capture                                │
+│   Passive sniff + deauth → client reauths → 4-wayHS     │
+│   OR: use existing .pcap from ~/airscope/captures/       │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│ Step 2: Fake AP + Deauth                                 │
+│   Userland 802.11 AP (OPEN mode)                         │
+│   Auth → Assoc → DHCP (10.0.0.x) → DNS blackhole        │
+│   Captive portal: "Wi-Fi Password Required" page         │
+│   Deauth loop kicks real clients off original AP          │
+└──────────────────────┬───────────────────────────────────┘
+                       │
+┌──────────────────────▼───────────────────────────────────┐
+│ Step 3: MIC Verification                                 │
+│   Password submitted on portal → MIC check against HS   │
+│   If match: plaintext password recovered (no offline)    │
+└──────────────────────────────────────────────────────────┘
 ```
 
-Build a standalone binary (per-OS, no cross-compile):
+### How the Userland AP Works
 
-```bash
-uv run pyinstaller airscope.spec --noconfirm --clean   # -> dist/
+1. **Beacon frames** broadcast the rogue SSID every 100ms
+2. **Authentication** — clients authenticate against the OPEN AP
+3. **Association** — AP tracks per-client state (seq numbers, AID)
+4. **DHCP** — userland DHCP server assigns `10.0.0.x` IPs
+5. **DNS** — all queries resolve to `10.0.0.1` (blackhole)
+6. **HTTP** — captive portal detection triggers OS-specific dialogs:
+   - iOS/macOS: `/hotspot-detect.html` → system dialog
+   - Android: `/generate_204` → notification
+   - Windows: `/connecttest.htm` → captive portal UI
+7. **Password capture** — form submission logged to `~/airscope/logs/captured_passwords.log`
+
+### Handshake Detection Prompt
+
+When an existing `.pcap` file is found in `~/airscope/captures/`, a modal dialog offers three options:
+
+1. **Use existing** — skip Step 1, go straight to fake AP
+2. **Custom path** — enter a path to a different handshake file
+3. **Capture new** — run Step 1 as normal
+
+### Cross-Platform
+
+The entire flow works identically on:
+- macOS 14+ (Apple Silicon + Intel)
+- Windows 10/11 (with WinUSB driver via Zadig)
+- Linux (Ubuntu 22.04+, with udev rule or sudo)
+
+### No Offline Cracking Needed
+
+MIC verification gives the plaintext password directly — no need to export to hashcat or aircrack-ng.
+
+---
+
+## Project Structure
+
+```
+airscope/
+├── src/airscope/
+│   ├── __init__.py
+│   ├── __main__.py            # Entry point, CLI flags
+│   ├── tokens.py              # Theme palette (Signal Noir)
+│   ├── ui/
+│   │   ├── app.py             # Main Textual App
+│   │   ├── themes.py          # Theme registration
+│   │   └── screens/           # Splash, Scanner, Focus, Vault, EvilTwin
+│   ├── evil_twin/             # EvilTwin module (3-step)
+│   │   ├── orchestration.py   # Flow control, handshake prompt
+│   │   ├── ap/                # Userland AP (frames, dhcp, dns, tcp, http)
+│   │   ├── screens/           # HandshakePrompt, PathInput modals
+│   │   └── usb/               # USB worker thread, device layer
+│   ├── campaigns/             # Attack campaigns (WPS, PMKID, WEP, SAE, batch)
+│   ├── scanner/               # Channel hopping, AP/client tracking
+│   ├── vault/                 # Capture storage, report export
+│   ├── crack/                 # Handshake parsing, hashcat integration
+│   ├── web/                   # Web dashboard (optional)
+│   └── chips/                 # Driver implementations (AR9271, RTL8812AU, etc.)
+├── tests/                     # 2982+ tests
+├── docs/                      # THEMES.md, FIRMWARE.md, HARDWARE.md
+├── assets/                    # Screenshots, GIFs, card art
+├── scripts/                   # Build helpers
+├── pyproject.toml
+├── airscope.spec              # PyInstaller config
+├── AGENTS.md                  # AI-assisted development conventions
+├── CONTRIBUTING.md            # Dev setup, PR guidelines
+└── README.md
 ```
 
-## One-Time Driver Setup
+---
 
-Handled in-app after pressing `START`:
+## Testing
 
-- **Linux:** One `pkexec`/`sudo` prompt for udev permissions and blocklists in `/etc/modprobe.d/`.
-- **macOS:** Plug in and press *Allow* in the authorization dialog. Nothing to install.
-- **Windows:** One UAC prompt installs WinUSB for the device.
+**2982 tests** — all tests run without hardware (USB interactions are mocked via pytest-mock).
 
-Undo it anytime from the splash screen with `Uninstall`, then re-plug the adapter.
+```bash
+uv run pytest                    # all tests
+uv run pytest tests/evil_twin/   # module-specific
+uv run pytest -k "dhcp"          # keyword filter
+uv run pytest -x                 # stop on first failure
+```
 
-## Themes
+**Lint:**
 
-Ships the **Signal Noir** theme family (`airscope-noir` default, `airscope-noir-contrast` for bright rooms) alongside Textual's built-ins. Switch with `ctrl+p` → theme. Details in [docs/THEMES.md](docs/THEMES.md).
+```bash
+uv run ruff check src/           # lint only (never format)
+```
 
-## Docs
+**CI:** [`.github/workflows/ci.yml`](.github/workflows/ci.yml) — lint + tests + import smoke on every push/PR.
 
-- [Supported hardware](docs/SUPPORTED-HARDWARE.md) — cards, bands, grading.
-- [Linux permissions](docs/LINUX-PERMISSIONS.md) — udev / modprobe notes.
-- [Firmware](docs/FIRMWARE.md) — vendored blob provenance and licenses.
-- [Driver credits](docs/CREDITS.md) — upstream sources.
-- [Contributing](CONTRIBUTING.md) — dev setup, tests, PR conventions.
+---
 
-## Attribution
+## Configuration
 
-airscope's attack workflows — WPS PixieDust/PIN, PMKID harvesting, deauth-assisted handshake capture, and the WEP replay suite — follow the playbook established by the original [Wifite](https://github.com/derv82/wifite2) project and the [aircrack-ng](https://www.aircrack-ng.org) suite. Its userland drivers are Python ports of GPLv2 Linux kernel and vendor DKMS drivers; the full upstream credit list is in [docs/CREDITS.md](docs/CREDITS.md).
+| Setting | Location | Default |
+|---------|----------|---------|
+| Theme | `Ctrl+P` → theme | `airscope-noir` |
+| Web dashboard port | `--port` flag | `8765` |
+| Captures | `~/airscope/captures/` | Auto-created |
+| Password log | `~/airscope/logs/captured_passwords.log` | Auto-created |
+| Exports | `--out` flag | `airscope_exports/` |
+| Log level | `--debug` / `--trace` | WARNING |
 
-airscope is an independent implementation: no wifite2 or aircrack-ng code is vendored. It drives USB hardware directly and shells out to hashcat/aircrack-ng only as external cracking tools.
+---
 
-## License & Disclaimer
+## Troubleshooting
 
-**Code:** [GNU General Public License v2.0](LICENSE).
+| Problem | Cause | Fix |
+|---------|-------|-----|
+| "No adapter found" | Wrong driver (Windows) | Run Zadig → WinUSB |
+| "Permission denied" (Linux) | No udev rule | Press START → allow pkexec |
+| Adapter not showing on macOS | IOKit authorization denied | System Settings → Privacy → allow |
+| EvilTwin: clients don't associate | Firmware data-frame RX not enabled | Check adapter firmware version |
+| EvilTwin: portal doesn't appear | DNS blackhole not responding | Check logs for DNS query handling |
+| TUI lag on macOS | USB I/O on event loop | Ensure USB worker thread is active |
+| PyInstaller binary crashes | Missing USB libs | Install libusb (Linux) / WinUSB (Windows) |
+
+---
+
+## Roadmap
+
+- [ ] Multi-AP EvilTwin (simultaneous rogue APs on different channels)
+- [ ] WPA3-SAE full handshake capture (no downgrade)
+- [ ] Plugin system for custom attacks
+- [ ] BLE / Zigbee sniffing
+- [ ] Cloud report sharing
+
+---
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup, PR guidelines, and code conventions.
+
+```bash
+uv sync --group dev       # install
+uv run airscope           # run
+uv run pytest             # test
+uv run ruff check src/    # lint
+```
+
+Read [AGENTS.md](AGENTS.md) for AI-assisted development conventions.
+
+---
+
+## License & Legal
+
+**Code:** [GNU General Public License v2.0](LICENSE)
 
 **Firmware:** Vendor blobs loaded onto adapters are redistributed verbatim under their manufacturers' licenses (see [docs/FIRMWARE.md](docs/FIRMWARE.md)).
 
-**⚠️ Notice & Disclaimer:** For use only on networks and equipment you own or are explicitly authorized to audit. Airscope drives USB hardware registers directly without kernel guardrails; use at your own risk.
+> **⚠️ Legal Notice:** airscope is intended exclusively for use on networks and equipment you own or are explicitly authorized to audit. Unauthorized access to computer networks is illegal in most jurisdictions (e.g., CFAA in the US, IT Act 2000 in India, Computer Misuse Act in the UK). The author accepts no liability for misuse. Use at your own risk.
+
+---
+
+## Acknowledgments
+
+- [PyUSB](https://github.com/pyusb/pyusb) — cross-platform USB access
+- [Textual](https://github.com/Textualize/textual) — terminal UI framework
+- [Python asyncio](https://docs.python.org/3/library/asyncio.html) — concurrent I/O
+- [Realtek RTL8812AU/RTL8814AU](https://www.realtek.com/) — chipset driver reference
+- Attack workflows follow the playbook established by [Wifite](https://github.com/derv82/wifite2) and the [aircrack-ng](https://www.aircrack-ng.org) suite
+
+---
+
+<p align="center">
+  Built with ❤️ and too much coffee<br>
+  Star the repo if it helped: <a href="https://github.com/udhaybhat00/airscope">github.com/udhaybhat00/airscope</a>
+</p>
