@@ -34,6 +34,11 @@ def setup_device(dev) -> tuple[int, int, int]:
     import usb.util
 
     try:
+        dev.reset()
+    except Exception:
+        pass
+
+    try:
         if dev.is_kernel_driver_active(0):
             dev.detach_kernel_driver(0)
     except (NotImplementedError, usb.core.USBError):
