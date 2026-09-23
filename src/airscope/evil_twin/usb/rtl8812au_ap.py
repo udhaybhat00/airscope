@@ -65,7 +65,7 @@ RX_DESC_SIZE = 0
 def _ctrl_read(dev, addr: int, length: int = 4, timeout: int = 1000) -> bytes:
     import usb.util
     data = dev.ctrl_transfer(
-        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIP_DEVICE | usb.util.ENDPOINT_IN,
+        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE | usb.util.ENDPOINT_IN,
         _USB_REQ_READ, addr & 0xFFFF, (addr >> 16) & 0xFFFF, length, timeout=timeout
     )
     return bytes(data)
@@ -74,7 +74,7 @@ def _ctrl_read(dev, addr: int, length: int = 4, timeout: int = 1000) -> bytes:
 def _ctrl_write(dev, addr: int, data: bytes, timeout: int = 1000):
     import usb.util
     dev.ctrl_transfer(
-        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIP_DEVICE | usb.util.ENDPOINT_OUT,
+        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE | usb.util.ENDPOINT_OUT,
         _USB_REQ_WRITE, addr & 0xFFFF, (addr >> 16) & 0xFFFF, data, timeout=timeout
     )
 
@@ -100,7 +100,7 @@ def h2c_cmd(dev, cmd_id: int, data: bytes, timeout: int = 1000):
     import usb.util
     payload = bytes([cmd_id]) + data[:6]
     dev.ctrl_transfer(
-        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIP_DEVICE | usb.util.ENDPOINT_OUT,
+        usb.util.CTRL_TYPE_VENDOR | usb.util.CTRL_RECIPIENT_DEVICE | usb.util.ENDPOINT_OUT,
         _USB_REQ_H2C, 0, 0, payload, timeout=timeout
     )
 
