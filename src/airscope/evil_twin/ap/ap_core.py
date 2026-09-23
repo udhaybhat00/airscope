@@ -1,102 +1,147 @@
-"""Userland AP state machine for the captive-portal fake AP.
+"""Userland 802.11 AP: handles auth, assoc, and client state."""
 
-Tracks per-client association state and responds to auth/assoc/probe
-frames.  Runs entirely in userland via the USB worker thread.
-"""
-from __future__ import annotations
-
-import logging
 import time
+import struct
+import threading
 from dataclasses import dataclass, field
-from enum import IntEnum
-from typing import Callable, Optional
-
-log = logging.getLogger(__name__)
-
-
-class ClientState(IntEnum):
-    NONE = 0
-    AUTHED = 1
-    ASSOCED = 2
+from typing import Optional
 
 
 @dataclass
-class Client:
-    mac: str
-    state: ClientState = ClientState.NONE
-    aid: int = 0
-    last_seen: float = 0.0
+class ClientState:
+    mac: bytes
+    aid: int
+    ip: Optional[str] = None
+    ip_bytes: Optional[bytes] = None
+    seq_to_client: int = 1
+    seq_from_client: int = 1
+    associated: bool = False
+    authed: bool = False
+    connected_at: float = field(default_factory=time.monotonic)
 
 
-@dataclass
-class ApCore:
-    """Minimal AP state machine: auth, assoc, probe response, client tracking.
+class APStateMachine:
+    """Handles 802.11 management frame responses and client tracking."""
 
-    ``send_frame`` injects a raw 802.11 frame (auth/assoc response, etc.)
-    back through the USB worker.
-    """
-    ssid: str = ""
-    bssid: bytes = b""
-    channel: int = 1
-    send_frame: Optional[Callable[[bytes], None]] = None
-    on_client_assoc: Optional[Callable[[str], None]] = None
+    def __init__(self, ap_mac: bytes, ssid: str, channel: int, usb_tx):
+        self.ap_mac = ap_mac
+        self.ssid = ssid
+        self.channel = channel
+        self.usb_tx = usb_tx
 
-    _clients: dict[str, Client] = field(default_factory=dict)
-    _next_aid: int = 1
+        self._clients: dict[bytes, ClientState] = {}
+        self._next_aid = 1
+        self._mgmt_seq = 1
+        self._lock = threading.Lock()
 
-    def handle_auth(self, src_mac: bytes) -> None:
-        """Open System Authentication: accept everyone."""
-        mac_str = ":".join(f"{b:02x}" for b in src_mac)
-        client = self._get_or_create(mac_str)
-        client.state = ClientState.AUTHED
-        client.last_seen = time.time()
-        from airscope.evil_twin.ap.frames import craft_auth_response
-        if self.send_frame is not None:
-            self.send_frame(craft_auth_response(src_mac, self.bssid))
-        log.debug("auth OK %s", mac_str)
+    def _next_mgmt_seq(self) -> int:
+        seq = self._mgmt_seq
+        self._mgmt_seq = (self._mgmt_seq + 1) & 0xFFF
+        return seq
 
-    def handle_assoc_req(self, src_mac: bytes) -> None:
-        """Association Request: assign AID, send Association Response."""
-        mac_str = ":".join(f"{b:02x}" for b in src_mac)
-        client = self._get_or_create(mac_str)
-        if client.aid == 0:
+    def handle_rx(self, raw_frame: bytes) -> None:
+        """Dispatch an incoming 802.11 frame. Called from USB RX thread."""
+        from .frames import parse_frame_control, parse_mgmt_addrs
+
+        frame_type, subtype, to_ds, from_ds = parse_frame_control(raw_frame)
+
+        if frame_type == 0:
+            da, sa, bssid = parse_mgmt_addrs(raw_frame)
+
+            if subtype == 0x0B:
+                self._handle_auth(raw_frame, da, sa)
+            elif subtype == 0x00:
+                self._handle_assoc_req(raw_frame, sa)
+            elif subtype == 0x04:
+                self._handle_probe(raw_frame, sa)
+
+        elif frame_type == 2:
+            from .frames import strip_80211_data
+            victim_mac, ip_packet = strip_80211_data(raw_frame)
+            if victim_mac and ip_packet:
+                self._handle_data(victim_mac, ip_packet)
+
+    def _handle_auth(self, frame: bytes, da: bytes, sa: bytes):
+        from .frames import craft_auth_response
+
+        victim_mac = sa
+        seq = self._next_mgmt_seq()
+        response = craft_auth_response(victim_mac, self.ap_mac, seq)
+        self.usb_tx(response, priority=0)
+
+        with self._lock:
+            if victim_mac not in self._clients:
+                self._clients[victim_mac] = ClientState(mac=victim_mac, aid=0)
+            self._clients[victim_mac].authed = True
+
+    def _handle_assoc_req(self, frame: bytes, sa: bytes):
+        from .frames import craft_assoc_response
+
+        victim_mac = sa
+        with self._lock:
+            if victim_mac not in self._clients:
+                self._clients[victim_mac] = ClientState(mac=victim_mac, aid=0)
+            client = self._clients[victim_mac]
+            if not client.authed:
+                return
             client.aid = self._next_aid
-            self._next_aid = (self._next_aid % 2007) + 1
-        client.state = ClientState.ASSOCED
-        client.last_seen = time.time()
-        from airscope.evil_twin.ap.frames import craft_assoc_response
-        if self.send_frame is not None:
-            self.send_frame(craft_assoc_response(src_mac, self.bssid, aid=client.aid))
-        log.debug("assoc OK %s aid=%d", mac_str, client.aid)
-        if self.on_client_assoc is not None:
-            self.on_client_assoc(mac_str)
+            self._next_aid += 1
+            client.associated = True
+            aid = client.aid
 
-    def handle_probe_request(self, src_mac: bytes, ssid: str | None) -> None:
-        """Probe Request: respond if SSID matches or is wildcard."""
-        if ssid and ssid != self.ssid:
+        seq = self._next_mgmt_seq()
+        response = craft_assoc_response(victim_mac, self.ap_mac, aid, seq)
+        self.usb_tx(response, priority=0)
+
+    def _handle_probe(self, frame: bytes, sa: bytes):
+        body = frame[24:]
+        i = 0
+        while i < len(body) - 1:
+            eid = body[i]
+            elen = body[i + 1]
+            if eid == 0:
+                probe_ssid = body[i + 2:i + 2 + elen].decode('utf-8', errors='ignore')
+                if probe_ssid == self.ssid or probe_ssid == '':
+                    self._send_probe_response(sa)
+                break
+            i += 2 + elen
+
+    def _send_probe_response(self, client_mac: bytes):
+        pass
+
+    def _handle_data(self, victim_mac: bytes, ip_packet: bytes):
+        if len(ip_packet) < 20:
             return
-        from airscope.evil_twin.ap.frames import craft_probe_response
-        if self.send_frame is not None:
-            self.send_frame(craft_probe_response(
-                self.bssid, self.ssid, self.channel, src_mac))
 
-    def get_client(self, mac: str) -> Client | None:
-        return self._clients.get(mac)
+        ip_proto = ip_packet[9]
 
-    def is_assoced(self, mac: str) -> bool:
-        client = self._clients.get(mac)
-        return client is not None and client.state == ClientState.ASSOCED
+        if ip_proto == 17:
+            from .dhcp import handle_dhcp
+            from .dns import handle_dns
+            udp = ip_packet[20:]
+            if len(udp) < 8:
+                return
+            dst_port = struct.unpack('>H', udp[2:4])[0]
+            if dst_port == 67:
+                handle_dhcp(ip_packet, victim_mac, self._send_to_client)
+            elif dst_port == 53:
+                handle_dns(ip_packet, victim_mac, self._send_to_client)
 
-    def cleanup_stale(self, timeout: float = 30.0) -> list[str]:
-        """Remove clients not seen within *timeout* seconds."""
-        now = time.time()
-        stale = [m for m, c in self._clients.items()
-                 if now - c.last_seen > timeout]
-        for m in stale:
-            del self._clients[m]
-        return stale
+        elif ip_proto == 6:
+            from .tcp import handle_tcp
+            handle_tcp(ip_packet, victim_mac, self._send_to_client, self._tcp_conns)
 
-    def _get_or_create(self, mac: str) -> Client:
-        if mac not in self._clients:
-            self._clients[mac] = Client(mac=mac)
-        return self._clients[mac]
+    def _send_to_client(self, victim_mac: bytes, ip_packet: bytes):
+        from .frames import wrap_in_80211_data
+
+        with self._lock:
+            client = self._clients.get(victim_mac)
+            if not client:
+                return
+            seq = client.seq_to_client
+            client.seq_to_client = (client.seq_to_client + 1) & 0xFFF
+
+        frame = wrap_in_80211_data(victim_mac, self.ap_mac, ip_packet, seq)
+        self.usb_tx(frame, priority=1)
+
+    _tcp_conns: dict = field(default_factory=dict)

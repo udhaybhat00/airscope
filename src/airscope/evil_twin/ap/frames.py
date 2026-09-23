@@ -206,9 +206,15 @@ def parse_fc(raw: bytes) -> tuple[int, int, bool, bool]:
     return fc_type, subtype, to_ds, from_ds
 
 
+parse_frame_control = parse_fc
+
+
 def parse_addrs_mgmt(raw: bytes) -> tuple[bytes, bytes, bytes]:
     """Parse DA, SA, BSSID from a management frame."""
     return raw[_ADDR1], raw[_ADDR2], raw[_ADDR3]
+
+
+parse_mgmt_addrs = parse_addrs_mgmt
 
 
 def parse_addrs_data(raw: bytes, to_ds: bool, from_ds: bool) -> tuple[bytes, bytes, bytes]:
@@ -233,18 +239,18 @@ def extract_ssid_from_probe(raw: bytes) -> str | None:
     return None
 
 
-def strip_data_payload(raw: bytes) -> tuple[bytes, bytes] | None:
+def strip_data_payload(raw: bytes) -> tuple[bytes, bytes] | tuple[None, None]:
     """Strip 802.11 header + LLC/SNAP from a received data frame.
-    Returns (src_mac, ip_packet) or None."""
+    Returns (src_mac, ip_packet) or (None, None)."""
     fc_type, subtype, to_ds, from_ds = parse_fc(raw)
     if fc_type != FC_TYPE_DATA:
-        return None
+        return None, None
     if to_ds:
         src_mac = raw[_ADDR2]  # SA = client
     elif from_ds:
         src_mac = raw[_ADDR1]  # SA = client (from AP perspective)
     else:
-        return None
+        return None, None
 
     # Find LLC/SNAP or QoS header
     hdr_len = _HDR_LEN
@@ -257,4 +263,7 @@ def strip_data_payload(raw: bytes) -> tuple[bytes, bytes] | None:
         ethertype = struct.unpack(">H", payload[6:8])[0]
         if ethertype == 0x0800:  # IPv4
             return src_mac, payload[8:]
-    return None
+    return None, None
+
+
+strip_80211_data = strip_data_payload

