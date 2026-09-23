@@ -38,6 +38,7 @@ from airscope.campaigns.pmkid import PmkidHarvestAttack
 from airscope.campaigns.wep import WepCampaign
 from airscope.campaigns.eviltwin import EvilTwinCampaign, EvilTwinInput
 from airscope.ui.screens.focus_v2.eviltwin_modal import EvilTwinInputModal
+from airscope.ui.screens.focus_v2.handshake_prompt import HandshakePromptScreen, HandshakePromptResult
 from airscope.campaigns.pin import WpsCampaign, load_run_state, run_progress_line
 from airscope.campaigns.deauth import DeauthCampaign
 from airscope.campaigns.sae import SaeCampaign
@@ -762,9 +763,7 @@ class FocusViewV2(Screen):
                 return False
             return None if fm.deauth_blocked(ap) else True
         if action == "silence":
-            return False if (ap is not None and Config.is_silenced(ap.bssid)) else True
-        if action == "unsilence":
-            return True if (ap is not None and Config.is_silenced(ap.bssid)) else False
+            return True
         return True
 
     def _sync_bindings(self) -> None:
@@ -816,9 +815,6 @@ class FocusViewV2(Screen):
                       "[yellow]disabled[/yellow] [dim](detect only, press w to toggle)[/dim]")
 
     def action_silence(self) -> None:
-        self._toggle_silence()
-
-    def action_unsilence(self) -> None:
         self._toggle_silence()
 
     def _toggle_silence(self) -> None:
@@ -1022,10 +1018,41 @@ class FocusViewV2(Screen):
         ap, array = self._target_ap, self.app.array
         if not ap or not array:
             return
+        from airscope.persist.save import find_existing_handshake
+        existing = find_existing_handshake(evil_input.twin_bssid)
+        if existing is not None:
+            self._pending_evil_input = evil_input
+            self.app.push_screen(
+                HandshakePromptScreen(existing, evil_input.twin_bssid),
+                self._on_handshake_prompt)
+            return
+        self._start_eviltwin_campaign(evil_input)
+
+    def _on_handshake_prompt(self, result: Optional[HandshakePromptResult]) -> None:
+        evil_input = getattr(self, "_pending_evil_input", None)
+        if evil_input is None:
+            return
+        if result is None:
+            return
+        if result.choice == 0:
+            self._start_eviltwin_campaign(evil_input,
+                                          existing_handshake_path=result.path)
+        elif result.choice == 1:
+            self._start_eviltwin_campaign(evil_input,
+                                          existing_handshake_path=result.path)
+        else:
+            self._start_eviltwin_campaign(evil_input)
+
+    def _start_eviltwin_campaign(self, evil_input: EvilTwinInput,
+                                 existing_handshake_path=None) -> None:
+        ap, array = self._target_ap, self.app.array
+        if not ap or not array:
+            return
         try:
             started = self._controls.start(
                 EvilTwinCampaign, array, ap, evil_input=evil_input,
-                log=self._log, recovered=self._on_eviltwin_recovered)
+                log=self._log, recovered=self._on_eviltwin_recovered,
+                existing_handshake_path=existing_handshake_path)
         except Exception as exc:
             logger.exception("EvilTwin start failed")
             self._log(f"[bold red]✗ EvilTwin failed to start:[/bold red] {escape(str(exc))}")
@@ -1033,10 +1060,16 @@ class FocusViewV2(Screen):
         if started is None:
             return
         spoofed = "spoofing" if evil_input.twin_bssid == ap.bssid else "new BSSID"
-        self._log(f"[bold cyan]EvilTwin[/bold cyan] of [bold cyan]"
-                  f"{escape(ap.ssid or ap.bssid)}[/bold cyan] on ch {ap.channel}"
-                  f" [dim]({spoofed}: {evil_input.twin_bssid})[/dim]")
-        self._log(treelog.branch("[italic]deauthing clients[/italic] [dim]every 0.5 s[/dim]"))
+        if existing_handshake_path:
+            self._log(f"[bold cyan]EvilTwin[/bold cyan] of [bold cyan]"
+                      f"{escape(ap.ssid or ap.bssid)}[/bold cyan] on ch {ap.channel}"
+                      f" [dim]({spoofed}: {evil_input.twin_bssid})[/dim]")
+            self._log(treelog.leaf(f"using existing handshake: {existing_handshake_path}"))
+        else:
+            self._log(f"[bold cyan]EvilTwin[/bold cyan] of [bold cyan]"
+                      f"{escape(ap.ssid or ap.bssid)}[/bold cyan] on ch {ap.channel}"
+                      f" [dim]({spoofed}: {evil_input.twin_bssid})[/dim]")
+            self._log(treelog.branch("[italic]deauthing clients[/italic] [dim]every 0.5 s[/dim]"))
         self.refresh_buttons()
 
     def _on_eviltwin_recovered(self, password: str) -> None:

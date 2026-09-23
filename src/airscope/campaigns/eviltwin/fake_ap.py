@@ -52,13 +52,15 @@ class FakeApStats:
 
 class FakeAP:
     def __init__(self, twin_iface, bssid: bytes, ssid: str, channel: int, twin_beacon: bytes,
-                 rx_source=None, record_m1: Optional[Callable[[bytes], None]] = None):
+                 rx_source=None, record_m1: Optional[Callable[[bytes], None]] = None,
+                 open_mode: bool = False):
         self.iface = twin_iface
         self.bssid = bssid
         self.ssid = ssid
         self.channel = channel
         self.twin_beacon = twin_beacon
         self.rx_source = rx_source
+        self.open_mode = open_mode
         self.record_m1 = record_m1 or (lambda _frame: None)
         self.stats = FakeApStats()
         self._probe_resp = probe_resp(bssid, ssid, channel)
@@ -138,6 +140,8 @@ class FakeAP:
         cs = mac_to_str(client)
         self._advance(cs, ClientPhase.ASSOCED)
         self._tx(assoc_resp(self.bssid, client))
+        if self.open_mode:
+            return
         anonce = os.urandom(32)
         rec = self.stats.clients[cs]
         rec.anonce, rec.replay = anonce, 1

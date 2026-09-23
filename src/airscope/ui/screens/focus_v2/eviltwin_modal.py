@@ -71,6 +71,7 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
         background: $primary; color: auto;
     }
     EvilTwinInputModal #channel-note { color: $text-muted; content-align: left middle; }
+    EvilTwinInputModal #portal-note { color: $text-muted; margin-top: 0; width: 1fr; }
     EvilTwinInputModal #warn { color: $text-warning; content-align: center middle; height: auto; display: none; }
     EvilTwinInputModal #button-row { height: auto; align: center middle; margin-top: 0; }
     EvilTwinInputModal #button-row Button { margin: 0 1; }
@@ -116,6 +117,17 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
                 yield Label("Twin channel", classes="row-label")
                 yield Label(f"mirrors the target on CH {self.target.channel} (Step 2 needs the "
                             "twin on the same channel)", id="channel-note")
+
+            with Horizontal(classes="row"):
+                yield Label("Captive portal", classes="row-label")
+                yield Select([("OFF - WPA2 twin + wordlist", False),
+                              ("ON  - OPEN twin + phishing page", True)],
+                             value=False, allow_blank=False, id="captive-portal")
+
+            with Horizontal(classes="row"):
+                yield Label("", classes="row-label")
+                yield Label("Requires dnsmasq + adapter with AP mode support",
+                            id="portal-note")
 
             yield Label("", id="warn")
             with Horizontal(id="button-row"):
@@ -184,13 +196,17 @@ class EvilTwinInputModal(ModalScreen[Optional[EvilTwinInput]]):
         if punter is None:
             self._error("Select a deauth adapter")
             return
+        if self.query_one("#captive-portal", Select).value and not getattr(host, "supports_ap_mode", False):
+            self._error("Captive portal requires an adapter with AP mode support")
+            return
         twin_bssid = self.query_one("#twin-bssid", Input).value.strip().lower()
         if not _MAC_RE.match(twin_bssid):
             self._error("Invalid BSSID")
             return
         self.dismiss(EvilTwinInput(
             twin_iface=host, punt_iface=punter, twin_channel=self.target.channel,
-            twin_bssid=twin_bssid))
+            twin_bssid=twin_bssid,
+            use_captive_portal=self.query_one("#captive-portal", Select).value))
 
     def _error(self, text: str) -> None:
         self._set_warn(f"[red]{text}[/red]")

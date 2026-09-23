@@ -452,3 +452,41 @@ def save_sae(ap: AccessPoint, frames: list[tuple[bytes, float]]) -> Optional[Sav
     path = _fresh_path(captures_dir, ap.ssid, ap.bssid, "_sae.pcap")
     write_pcap(path, frames)
     return SaveResult(path=path, was_new=True)
+
+
+_HANDSHAKE_EXTS = (".pcap", ".pcapng", ".hc22000", ".hccapx")
+
+
+def find_existing_handshake(target_bssid: str,
+                            captures_dir: Optional[Path] = None) -> Optional[Path]:
+    """Search *captures_dir* for an existing handshake file matching *target_bssid*.
+
+    Search strategy (priority order):
+      1. Filename contains the BSSID (dashed or colon form) **and** a handshake extension.
+      2. Most-recently-modified match wins when multiple files qualify.
+
+    Returns the best match, or ``None``."""
+    if captures_dir is None:
+        captures_dir = Path(Config.captures_dir)
+    if not captures_dir.is_dir():
+        return None
+
+    bssid_dashed = bssid_to_dashed(target_bssid)
+    bssid_clean = target_bssid.replace(":", "").replace("-", "").lower()
+
+    candidates: list[tuple[float, Path]] = []
+    for p in captures_dir.iterdir():
+        if not p.is_file() or p.suffix.lower() not in _HANDSHAKE_EXTS:
+            continue
+        stem_clean = p.stem.replace("-", "").replace("_", "").lower()
+        if bssid_clean in stem_clean or bssid_dashed.lower() in p.name.lower():
+            try:
+                mtime = p.stat().st_mtime
+            except OSError:
+                continue
+            candidates.append((mtime, p))
+
+    if not candidates:
+        return None
+    candidates.sort(key=lambda t: t[0], reverse=True)
+    return candidates[0][1]

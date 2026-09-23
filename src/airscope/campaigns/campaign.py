@@ -76,19 +76,29 @@ class Campaign:
                 if self.array is not None and self.iface is None:
                     logger.warning("campaign %r: no card can reach channel %s; aborting",
                                    self.key, getattr(self.ap, "channel", "?"))
+                    _log = getattr(self, "log", None)
+                    if _log is not None:
+                        _log(f"[bold red]✗ no adapter can reach channel "
+                             f"{getattr(self.ap, 'channel', '?')}[/bold red]")
                 else:
                     await self._loop()
             except asyncio.CancelledError:
                 raise
-            except Exception:
+            except Exception as exc:
                 logger.exception("campaign %r crashed in _loop()", self.key)
+                _log = getattr(self, "log", None)
+                if _log is not None:
+                    _log(f"[bold red]✗ campaign crashed: {exc}[/bold red]")
             finally:
                 try:
                     await self.teardown()
                 except asyncio.CancelledError:
                     raise
-                except Exception:
+                except Exception as exc:
                     logger.exception("campaign %r crashed in teardown()", self.key)
+                    _log = getattr(self, "log", None)
+                    if _log is not None:
+                        _log(f"[bold red]✗ teardown failed: {exc}[/bold red]")
         finally:
             # Only release the slot if WE still hold it
             if Campaign.active is self:

