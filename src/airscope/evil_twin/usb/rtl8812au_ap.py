@@ -149,7 +149,7 @@ class Rtl8812auAP:
         to forward all received frames to USB RX.
 
         Some firmware versions use write-only registers (readback
-        doesn't match), so we accept any non-error write as success.
+        doesn't match), so we accept any successful write as success.
         """
         for addr in RCR_CANDIDATES:
             try:
@@ -159,13 +159,10 @@ class Rtl8812auAP:
                     val = read_reg(self.dev, addr)
                 except Exception:
                     val = None
-                if val == 0xFFFFFFFF or val is None:
-                    log.info("[rtl8812au] RCR set at 0x%03X (readback=%s)",
-                             addr, f"0x{val:08X}" if val else "write-only")
-                    self._rcr_addr = addr
-                    return True
-                log.debug("[rtl8812au] RCR 0x%03X readback: 0x%08X (not matching)",
-                          addr, val)
+                log.info("[rtl8812au] RCR write to 0x%03X OK (readback=%s)",
+                         addr, f"0x{val:08X}" if val is not None else "N/A")
+                self._rcr_addr = addr
+                return True
             except Exception:
                 continue
 
