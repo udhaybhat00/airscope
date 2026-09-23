@@ -7,6 +7,7 @@ from __future__ import annotations
 import asyncio
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Callable, Iterator, Optional
 
 from airscope.campaigns.campaign import Campaign
@@ -16,7 +17,9 @@ from airscope.crack.handshake import CrackablePair, crackable_pairs, mic_matches
 from airscope.crack.wpa_psk import eapol_mic, kck, pmk, ptk
 from airscope.dot11 import build_deauth, str_to_mac
 from airscope.dot11.ap import beacon_clone, eapol_m3, eapol_m3_payload
-from airscope.models.handshake import Handshake
+from airscope.models.handshake import Handshake, HandshakeMessage
+from airscope.persist.common import parse_hc22000
+from airscope.persist.config import Config
 from airscope.persist.save import save_eviltwin_psk
 from airscope.persist.vault import Vault
 
@@ -164,6 +167,87 @@ class EvilTwinCampaign(Campaign):
             self.log(f"dictionary: {wordlist}")
         self._candidates = _CandidateFeed(iter_candidates(wordlist, seeds))
         return self._candidates
+
+    def _load_existing_handshake(self) -> bool:
+        """Load handshake from existing_handshake_path into self.ap.handshakes.
+
+        The tool saves handshakes in both .pcap and .hc22000 formats.
+        We parse the .hc22000 file (same base name) to reconstruct Handshake
+        objects with their EAPOL messages.
+        """
+        if not self.existing_handshake_path:
+            return False
+
+        path = Path(self.existing_handshake_path)
+        if not path.exists():
+            self.log(f"[bold red]handshake file not found: {path}[/bold red]")
+            return False
+
+        # Find the corresponding .hc22000 file
+        hc22000_path = path.with_suffix(".hc22000")
+        if not hc22000_path.exists():
+            # Try the pcap directory's aggregate file
+            hc22000_path = Path(Config.captures_dir) / f"{path.stem}.hc22000"
+            if not hc22000_path.exists():
+                self.log(f"[bold red]no .hc22000 file found for {path}[/bold red]")
+                return False
+
+        try:
+            # Parse hc22000 file and reconstruct Handshake objects
+            loaded = 0
+            for line in hc22000_path.read_text().splitlines():
+                entry = parse_hc22000(line)
+                if not entry:
+                    continue
+                if entry.kind != "02":  # Only 4-way handshakes (WPA*02)
+                    continue
+                if entry.mac_ap != self.ap.bssid.lower():
+                    continue
+
+                # Get or create Handshake for this client
+                hs = self.ap.handshakes.get(entry.mac_sta)
+                if hs is None:
+                    hs = Handshake(
+                        bssid=entry.mac_ap,
+                        client_mac=entry.mac_sta,
+                        beacon_frame=self.ap.last_beacon_frame,
+                        akm_offered=list(self.ap.akm_suites),
+                    )
+                    self.ap.handshakes[entry.mac_sta] = hs
+
+                # Reconstruct HandshakeMessage from hc22000 fields
+                # The eapol field contains the raw EAPOL frame bytes (hex)
+                if entry.eapol:
+                    eapol_bytes = bytes.fromhex(entry.eapol)
+                    # Determine msg_num from message_pair
+                    msg_pair = int(entry.message_pair) if entry.message_pair else 0
+                    msg_num = 0
+                    if msg_pair in (0x00, 0x02):  # M1+M2 or M2+M3, EAPOL from M2
+                        msg_num = 2
+                    elif msg_pair in (0x05, 0x01):  # M3+M4 or M1+M4, EAPOL from M4
+                        msg_num = 4
+
+                    hs_msg = HandshakeMessage(
+                        raw=eapol_bytes,
+                        msg_num=msg_num,
+                        replay_hex=entry.anonce.lower() if entry.anonce else "",
+                        nonce=bytes.fromhex(entry.anonce) if entry.anonce else b"",
+                        mic=bytes.fromhex(entry.pmkid_or_mic) if entry.pmkid_or_mic else b"",
+                        key_data_len=0,  # Not easily extracted from hc22000
+                        eapol_payload=eapol_bytes,
+                        akm=None,
+                        timestamp=0.0,
+                    )
+                    if not hs.has_message(eapol_bytes):
+                        hs.messages.append(hs_msg)
+                        loaded += 1
+
+            self.log(f"[et] loaded {loaded} EAPOL messages from {hc22000_path.name}")
+            return loaded > 0
+
+        except Exception as e:
+            self.log(f"[bold red]failed to load existing handshake: {e}[/bold red]")
+            return False
 
     def _verify_online(self, hs: Handshake, pair: CrackablePair) -> Optional[str]:
         feed = self._candidate_source()
@@ -357,6 +441,8 @@ class EvilTwinCampaign(Campaign):
     async def _loop(self) -> None:
         if self.existing_handshake_path is not None:
             self.log(f"[et] using existing handshake: {self.existing_handshake_path}")
+            if not self._load_existing_handshake():
+                return
         else:
             if not await self._capture_reference():
                 return
