@@ -3,6 +3,7 @@
 import json
 import os
 import platform
+import time
 import logging
 from pathlib import Path
 
@@ -122,8 +123,26 @@ def setup_device(dev) -> tuple[int, int, int]:
     except (NotImplementedError, usb.core.USBError):
         pass
 
-    cfg = dev.get_active_configuration()
-    dev.set_configuration(cfg)
+    try:
+        cfg = dev.get_active_configuration()
+    except usb.core.USBError:
+        try:
+            dev.attach_kernel_driver(0)
+        except Exception:
+            pass
+        try:
+            dev.reset()
+            time.sleep(0.5)
+            cfg = dev.get_active_configuration()
+        except Exception as e:
+            raise RuntimeError(
+                f"Cannot get USB configuration (device may need replug): {e}"
+            ) from e
+
+    try:
+        dev.set_configuration(cfg)
+    except usb.core.USBError:
+        pass
 
     intf = cfg[(0, 0)]
     ep_rx = None
@@ -136,7 +155,7 @@ def setup_device(dev) -> tuple[int, int, int]:
                 ep_rx = ep.bEndpointAddress
             else:
                 ep_tx = ep.bEndpointAddress
-        elif usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_CONTROL:
+        elif usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_CTRL:
             ep_ctrl = ep.bEndpointAddress
 
     if ep_rx is None or ep_tx is None:

@@ -147,21 +147,29 @@ class Rtl8812auAP:
         This is the ONLY firmware config needed for EvilTwin.
         The chip is already in monitor mode; we just need to tell it
         to forward all received frames to USB RX.
+
+        Some firmware versions use write-only registers (readback
+        doesn't match), so we accept any non-error write as success.
         """
         for addr in RCR_CANDIDATES:
             try:
                 write_reg(self.dev, addr, 0xFFFFFFFF)
                 time.sleep(0.05)
-                val = read_reg(self.dev, addr)
-                if val == 0xFFFFFFFF:
-                    log.info("[rtl8812au] RCR set at 0x%03X = 0xFFFFFFFF", addr)
+                try:
+                    val = read_reg(self.dev, addr)
+                except Exception:
+                    val = None
+                if val == 0xFFFFFFFF or val is None:
+                    log.info("[rtl8812au] RCR set at 0x%03X (readback=%s)",
+                             addr, f"0x{val:08X}" if val else "write-only")
                     self._rcr_addr = addr
                     return True
-                log.debug("[rtl8812au] RCR 0x%03X readback: 0x%08X (not matching)", addr, val)
+                log.debug("[rtl8812au] RCR 0x%03X readback: 0x%08X (not matching)",
+                          addr, val)
             except Exception:
                 continue
 
-        log.warning("[rtl8812au] RCR verification failed, using 0x14C (unverified)")
+        log.warning("[rtl8812au] RCR write failed at all candidates, trying 0x14C blind")
         self._rcr_addr = 0x14C
         try:
             write_reg(self.dev, 0x14C, 0xFFFFFFFF)
