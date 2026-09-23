@@ -318,8 +318,8 @@ class EvilTwinCampaign(Campaign):
     # ----- Step 3: captive portal mode ----------------------------------------
 
     async def _step3_captive_portal(self) -> None:
-        """Launch captive portal HTTP server and wait for a password submission."""
-        from airscope.campaigns.eviltwin.captive_portal import CaptivePortal
+        """Launch userland captive-portal AP stack and wait for a password."""
+        from airscope.evil_twin.orchestration import CaptivePortalOrchestrator
 
         instances = self._crackable_instances(self.ap.bssid.lower())
         if not instances:
@@ -332,8 +332,9 @@ class EvilTwinCampaign(Campaign):
             self.password = password
             self._recovered(password)
 
-        self._captive_portal = CaptivePortal(
-            wlan_iface=self.twin_iface,
+        self._captive_portal = CaptivePortalOrchestrator(
+            driver=self.twin_iface.driver,
+            iface=self.twin_iface,
             ssid=self.ssid,
             bssid=self.twin_bssid,
             channel=self.twin_channel,
@@ -341,14 +342,14 @@ class EvilTwinCampaign(Campaign):
             log_fn=self.log,
             on_password=_on_password,
         )
-        self._captive_portal.start()
+        await self._captive_portal.start()
 
         self.log("[3/3] captive portal active; waiting for password submission")
         while not self.stopped and self.password is None:
             await asyncio.sleep(0.5)
 
         if self._captive_portal is not None:
-            self._captive_portal.stop()
+            await self._captive_portal.stop()
             self._captive_portal = None
 
     # ----- lifecycle: _loop = the work; teardown = release the radio --------------
