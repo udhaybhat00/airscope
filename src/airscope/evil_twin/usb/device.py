@@ -28,9 +28,9 @@ def find_adapter():
     return None
 
 
-def setup_device(dev) -> tuple[int, int]:
+def setup_device(dev) -> tuple[int, int, int]:
     """Configure the USB device for monitor/AP mode.
-    Returns (ep_rx, ep_tx) endpoint addresses."""
+    Returns (ep_rx, ep_tx, ep_ctrl)."""
     import usb.util
 
     try:
@@ -45,6 +45,7 @@ def setup_device(dev) -> tuple[int, int]:
     intf = cfg[(0, 0)]
     ep_rx = None
     ep_tx = None
+    ep_ctrl = 0x00
 
     for ep in intf:
         if usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_BULK:
@@ -52,31 +53,23 @@ def setup_device(dev) -> tuple[int, int]:
                 ep_rx = ep.bEndpointAddress
             else:
                 ep_tx = ep.bEndpointAddress
+        elif usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_CONTROL:
+            ep_ctrl = ep.bEndpointAddress
 
     if ep_rx is None or ep_tx is None:
         raise RuntimeError(f"Could not find bulk endpoints (rx={ep_rx}, tx={ep_tx})")
 
-    log.info(f"USB endpoints: RX=0x{ep_rx:02x}, TX=0x{ep_tx:02x}")
-    return ep_rx, ep_tx
+    log.info(f"USB endpoints: RX=0x{ep_rx:02x}, TX=0x{ep_tx:02x}, CTRL=0x{ep_ctrl:02x}")
+    return ep_rx, ep_tx, ep_ctrl
 
 
 def get_ctrl_endpoint(dev) -> int:
-    """Get the control endpoint address (EP0) for vendor requests.
+    """Get control endpoint address (EP0) for vendor requests.
 
-    RTL8812AU uses EP0 control transfers for register read/write,
-    H2C commands, and AP mode configuration. The endpoint address
-    is always 0x00 for the default control pipe.
+    For RTL8812AU the default control pipe is always 0x00.
+    Prefer using setup_device() which returns (ep_rx, ep_tx, ep_ctrl).
     """
-    try:
-        import usb.util
-        cfg = dev.get_active_configuration()
-        intf = cfg[(0, 0)]
-        for ep in intf:
-            if usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_CONTROL:
-                return ep.bEndpointAddress
-    except Exception:
-        pass
-    return 0x00  # EP0 default control pipe
+    return 0x00
 
 
 def platform_setup():

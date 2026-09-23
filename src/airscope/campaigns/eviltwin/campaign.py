@@ -458,7 +458,7 @@ class EvilTwinCampaign(Campaign):
         if self._deauth_task is not None:
             self._deauth_task.cancel()
         if self._captive_portal is not None:
-            self._captive_portal.stop()
+            await self._captive_portal.stop()
             self._captive_portal = None
         if self.fakeap is not None:
             await self.fakeap.stop()
