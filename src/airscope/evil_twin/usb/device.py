@@ -1,5 +1,6 @@
 """Cross-platform USB device abstraction."""
 
+import os
 import platform
 import logging
 
@@ -9,20 +10,57 @@ USB_VID = 0x0BDA
 USB_PIDS = [0xC812, 0xA801, 0xC820, 0x3593]
 
 
+def _init_usb_backend():
+    """Initialize PyUSB backend. On macOS, explicitly point to Homebrew libusb."""
+    import usb.core
+    import usb.backend.libusb1
+
+    if platform.system() != "Darwin":
+        return
+
+    try:
+        list(usb.core.find(find_all=True))
+        return
+    except usb.core.NoBackendError:
+        pass
+
+    candidates = [
+        "/opt/homebrew/lib/libusb-1.0.dylib",
+        "/opt/homebrew/lib/libusb-1.0.0.dylib",
+        "/usr/local/lib/libusb-1.0.dylib",
+        "/usr/local/lib/libusb-1.0.0.dylib",
+        "/opt/local/lib/libusb-1.0.dylib",
+    ]
+
+    for path in candidates:
+        if os.path.exists(path):
+            backend = usb.backend.libusb1.get_backend(
+                find_library=lambda name, p=path: p
+            )
+            usb.core.default_backend = backend
+            log.info("PyUSB backend: %s", path)
+            return
+
+    raise RuntimeError(
+        "libusb not found. Install with: brew install libusb\n"
+        "Or set: export DYLD_LIBRARY_PATH=\"/opt/homebrew/lib:$DYLD_LIBRARY_PATH\""
+    )
+
+
 def find_adapter():
     """Find the RTL8812AU/8814AU USB adapter. Cross-platform."""
+    _init_usb_backend()
     import usb.core
-    import usb.util
 
     for pid in USB_PIDS:
         dev = usb.core.find(idVendor=USB_VID, idProduct=pid)
         if dev is not None:
-            log.info(f"Found adapter: {USB_VID:04x}:{pid:04x}")
+            log.info("Found adapter: %04x:%04x", USB_VID, pid)
             return dev
 
     dev = usb.core.find(idVendor=USB_VID)
     if dev is not None:
-        log.info(f"Found Realtek adapter (uncommon PID): {dev.idProduct:04x}")
+        log.info("Found Realtek adapter (uncommon PID): %04x", dev.idProduct)
         return dev
 
     return None
@@ -64,16 +102,12 @@ def setup_device(dev) -> tuple[int, int, int]:
     if ep_rx is None or ep_tx is None:
         raise RuntimeError(f"Could not find bulk endpoints (rx={ep_rx}, tx={ep_tx})")
 
-    log.info(f"USB endpoints: RX=0x{ep_rx:02x}, TX=0x{ep_tx:02x}, CTRL=0x{ep_ctrl:02x}")
+    log.info("USB endpoints: RX=0x%02x, TX=0x%02x, CTRL=0x%02x", ep_rx, ep_tx, ep_ctrl)
     return ep_rx, ep_tx, ep_ctrl
 
 
 def get_ctrl_endpoint(dev) -> int:
-    """Get control endpoint address (EP0) for vendor requests.
-
-    For RTL8812AU the default control pipe is always 0x00.
-    Prefer using setup_device() which returns (ep_rx, ep_tx, ep_ctrl).
-    """
+    """Get control endpoint address (EP0) for vendor requests."""
     return 0x00
 
 
@@ -91,12 +125,8 @@ def platform_setup():
 
     elif system == "Linux":
         log.info("Linux: using epoll event loop")
-        import os
         if not os.access('/dev/bus/usb', os.R_OK):
             log.warning(
                 "Linux: May need udev rule or sudo for USB access.\n"
                 'Add: SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", MODE=="0666"'
             )
-
-    if system == "Windows":
-        pass
