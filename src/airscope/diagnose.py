@@ -4,6 +4,9 @@ Usage:
     uv run python -m airscope.diagnose                # 4-step practical test
     uv run python -m airscope.diagnose --verbose      # debug logging
     uv run python -m airscope.diagnose --sniff        # sniff for auth/assoc frames
+    uv run python -m airscope.diagnose --raw-rx       # raw hex dump from RX
+    uv run python -m airscope.diagnose --test-reg     # test register R/W
+    uv run python -m airscope.diagnose --brute-reg    # brute-force vendor request codes
     uv run python -m airscope.diagnose --start-ap     # start live AP
 """
 
@@ -19,6 +22,12 @@ def main():
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
     parser.add_argument("--sniff", action="store_true",
                         help="Sniff for incoming 802.11 frames")
+    parser.add_argument("--raw-rx", action="store_true",
+                        help="Raw hex dump from RX endpoint (bypass parser)")
+    parser.add_argument("--test-reg", action="store_true",
+                        help="Test if register R/W works")
+    parser.add_argument("--brute-reg", action="store_true",
+                        help="Brute-force vendor request codes")
     parser.add_argument("--start-ap", action="store_true",
                         help="Start a live AP (requires --ssid and --channel)")
     parser.add_argument("--ssid", default="TestNet", help="SSID for --start-ap")
@@ -48,10 +57,16 @@ def main():
 
     ap = Rtl8812auAP(dev, ep_rx=ep_rx, ep_tx=ep_tx, ep_ctrl=ep_ctrl)
 
-    if args.start_ap:
+    if args.raw_rx:
+        _run_raw_rx(ap, args)
+    elif args.test_reg:
+        _run_test_reg(ap)
+    elif args.brute_reg:
+        _run_brute_reg(ap)
+    elif args.start_ap:
         _run_start_ap(ap, args, log)
     elif args.sniff:
-        _run_sniff(ap, log)
+        _run_sniff(ap, args, log)
     else:
         _run_diagnostic(ap, log)
 
@@ -85,11 +100,130 @@ def _run_diagnostic(ap, log):
         ap.deinit_monitor_rx()
 
 
-def _run_sniff(ap, log):
+def _run_raw_rx(ap, args):
+    """Read raw bytes from RX endpoint. No parsing. Just hex dump."""
+    duration = 15
+    print(f"\n{'=' * 50}")
+    print(f"  Raw RX dump for {duration}s (Ctrl+C to stop)")
+    print(f"  Reading from EP 0x{ap.ep_rx:02x}...")
+    print(f"{'=' * 50}\n")
+
+    ap.init_monitor_rx()
+    count = 0
+    start = time.monotonic()
+    try:
+        while time.monotonic() - start < duration:
+            try:
+                data = ap.dev.read(ap.ep_rx, 512, timeout=1000)
+                if data:
+                    count += 1
+                    hex_str = ' '.join(f'{b:02x}' for b in data[:64])
+                    print(f"[{count:4d}] {len(data):3d} bytes: {hex_str}")
+                    if len(data) > 64:
+                        print(f"       ... ({len(data)-64} more bytes)")
+            except Exception as e:
+                if 'timeout' not in str(e).lower():
+                    print(f"USB Error: {e}")
+    except KeyboardInterrupt:
+        pass
+
+    print(f"\nTotal reads: {count}")
+    if count == 0:
+        print("NOTHING coming in on RX endpoint.")
+        print("  -> Problem is RCR (chip not forwarding frames)")
+        print("  -> Try: uv run python -m airscope.diagnose --test-reg")
+    else:
+        print("Frames ARE arriving! Parser is the problem.")
+        print("  -> Check _try_parse_rx() descriptor offset")
+
+    ap.deinit_monitor_rx()
+
+
+def _run_test_reg(ap):
+    """Test if register R/W works at all."""
+    print(f"\n{'=' * 50}")
+    print("  Register R/W Test")
+    print(f"{'=' * 50}\n")
+
+    results = ap.test_registers()
+
+    print(f"{'Address':<10} {'Value':<12} {'Status'}")
+    print("-" * 40)
+
+    all_zero = True
+    all_ff = True
+    for addr, val in results.items():
+        status = ""
+        if isinstance(val, str):
+            print(f"0x{addr:04X}     {val}")
+            continue
+        if val != 0:
+            all_zero = False
+        if val != 0xFFFFFFFF:
+            all_ff = False
+        if addr == 0x14C:
+            status = "<- RCR candidate"
+        elif addr == 0x148:
+            status = "<- RCR candidate"
+        print(f"0x{addr:04X}     0x{val:08X}   {status}")
+
+    print("-" * 40)
+
+    if all_zero:
+        print("ALL registers read 0x00000000")
+        print("  -> Register READS are not working")
+        print("  -> Vendor request code for READ is wrong")
+        print("  -> Try: uv run python -m airscope.diagnose --brute-reg")
+    elif all_ff:
+        print("ALL registers read 0xFFFFFFFF")
+        print("  -> Register READS are returning garbage")
+        print("  -> Vendor request code for READ is wrong")
+    else:
+        print("Some registers have non-trivial values")
+        print("  -> Register R/W is working")
+        print("  -> RCR write should be landing")
+        print("  -> Problem is likely the RX parser, not RCR")
+
+    from .evil_twin.usb.rtl8812au_ap import read_reg, write_reg
+    print("\nWrite/Readback Test:")
+    test_addr = 0x14C
+    test_val = 0xFFFFFFFF
+    try:
+        write_reg(ap.dev, test_addr, test_val)
+        time.sleep(0.1)
+        readback = read_reg(ap.dev, test_addr)
+        if readback == test_val:
+            print(f"  OK 0x{test_addr:04X} = 0x{test_val:08X} (write+readback OK)")
+        else:
+            print(f"  WARN 0x{test_addr:04X}: wrote 0x{test_val:08X}, read 0x{readback:08X}")
+            print("     -> Write may be working but readback is wrong (write-only reg?)")
+            print("     -> OR write is being silently ignored")
+    except Exception as e:
+        print(f"  FAIL Write failed: {e}")
+
+
+def _run_brute_reg(ap):
+    """Brute-force vendor request codes."""
+    print(f"\n{'=' * 50}")
+    print("  Brute-forcing vendor request codes")
+    print(f"{'=' * 50}\n")
+
+    working_read, working_write = ap.brute_force_register_access()
+
+    if working_read and working_write:
+        print(f"\nWorking codes: READ={working_read}, WRITE={working_write}")
+        print("  Update rtl8812au_ap.py to use these.")
+    else:
+        print("\nNo working vendor request code found.")
+        print("  The adapter may use a completely different protocol.")
+
+
+def _run_sniff(ap, args, log):
     """Listen for 802.11 frames and print auth/assoc/data."""
     import usb.core
 
     ap.init_monitor_rx()
+    verbose = args.verbose
 
     print(f"\n{'=' * 50}")
     print("  Sniffing for 802.11 frames...")
@@ -98,6 +232,7 @@ def _run_sniff(ap, log):
     print(f"{'=' * 50}\n")
 
     frame_count = 0
+    reject_count = 0
     try:
         while True:
             try:
@@ -105,8 +240,20 @@ def _run_sniff(ap, log):
                 if not data:
                     continue
 
-                frame = ap._try_parse_rx(bytes(data))
+                raw = bytes(data)
+                frame = ap._try_parse_rx(raw)
                 if frame is None or len(frame) < 2:
+                    reject_count += 1
+                    if verbose:
+                        hex_head = ' '.join(f'{b:02x}' for b in raw[:32])
+                        print(f"  [REJECTED] {len(raw)} bytes: {hex_head}")
+                        for offset in range(0, min(len(raw) - 2, 64), 2):
+                            fc = struct.unpack('<H', raw[offset:offset + 2])[0]
+                            ftype = (fc >> 4) & 0x03
+                            if ftype in (0, 1, 2) and fc != 0:
+                                print(f"         -> Possible FC at offset {offset}: "
+                                      f"0x{fc:04x} (type={ftype})")
+                                break
                     continue
 
                 fc = struct.unpack('<H', frame[0:2])[0]
@@ -124,18 +271,21 @@ def _run_sniff(ap, log):
                         0x0A: "DISASSOC", 0x0C: "DEAUTH",
                     }
                     name = names.get(subtype, f"MGMT_{subtype:02x}")
-                    if subtype in (0x08, 0x05):  # Beacon/Probe Resp
+                    if subtype in (0x08, 0x05):
                         ssid = ap._extract_ssid(frame)
-                        print(f"  [{ts}] #{frame_count} {name} {bssid.hex(':')} SSID='{ssid}'")
-                    elif subtype == 0x04:  # Probe Req
+                        print(f"  [{ts}] #{frame_count} {name} "
+                              f"{bssid.hex(':')} SSID='{ssid}'")
+                    elif subtype == 0x04:
                         ssid = ap._extract_ssid(frame)
-                        print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')} SSID='{ssid}'")
+                        print(f"  [{ts}] #{frame_count} {name} "
+                              f"from {sa.hex(':')} SSID='{ssid}'")
                     else:
                         print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')}")
 
                 elif ftype == 2:  # Data
                     ra, ta = frame[4:10], frame[10:16]
-                    print(f"  [{ts}] #{frame_count} DATA {ta.hex(':')} -> {ra.hex(':')} ({len(frame)} bytes)")
+                    print(f"  [{ts}] #{frame_count} DATA "
+                          f"{ta.hex(':')} -> {ra.hex(':')} ({len(frame)} bytes)")
 
             except usb.core.USBError as e:
                 if e.errno == 19:
@@ -143,8 +293,9 @@ def _run_sniff(ap, log):
                     break
                 continue
     except KeyboardInterrupt:
-        print(f"\n\n  Stopped. Total frames: {frame_count}")
+        pass
 
+    print(f"\n  Stopped. Parsed: {frame_count}, Rejected: {reject_count}")
     ap.deinit_monitor_rx()
 
 
@@ -219,7 +370,8 @@ def _run_start_ap(ap, args, log):
                 elif subtype == 0x04:  # Probe Request
                     probe_ssid = ap._extract_ssid(frame)
                     if probe_ssid == ssid or probe_ssid == '':
-                        print(f"  [PROBE REQ] from {sa.hex(':')} SSID='{probe_ssid}'")
+                        print(f"  [PROBE REQ] from {sa.hex(':')} "
+                              f"SSID='{probe_ssid}'")
 
             except usb.core.USBError as e:
                 if e.errno == 19:

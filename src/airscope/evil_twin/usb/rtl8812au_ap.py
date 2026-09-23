@@ -288,6 +288,67 @@ class Rtl8812auAP:
     # Diagnostics (4-step practical test)
     # ------------------------------------------------------------------
 
+    def test_registers(self) -> dict:
+        """Test if register R/W works at all."""
+        test_addrs = [0x00, 0x04, 0x10, 0x14, 0x18, 0x1C, 0x20,
+                      0x148, 0x14C, 0x150, 0x2000, 0x2004]
+        results = {}
+        for addr in test_addrs:
+            try:
+                val = read_reg(self.dev, addr)
+                results[addr] = val
+            except Exception as e:
+                results[addr] = f"ERROR: {e}"
+        return results
+
+    def brute_force_register_access(self) -> tuple:
+        """Try different vendor request codes until one works.
+
+        Returns (working_read, working_write) tuples or (None, None).
+        """
+        import usb.core
+        import usb.util
+
+        write_candidates = [
+            (0x40, 0x01, "VENDOR|DEVICE|OUT, req=0x01"),
+            (0x40, 0x02, "VENDOR|DEVICE|OUT, req=0x02"),
+            (0x40, 0x00, "VENDOR|DEVICE|OUT, req=0x00"),
+            (0x41, 0x01, "VENDOR|INTERFACE|OUT, req=0x01"),
+            (0x41, 0x02, "VENDOR|INTERFACE|OUT, req=0x02"),
+        ]
+
+        read_candidates = [
+            (0xC0, 0x04, "VENDOR|DEVICE|IN, req=0x04"),
+            (0xC0, 0x05, "VENDOR|DEVICE|IN, req=0x05"),
+            (0xC0, 0x00, "VENDOR|DEVICE|IN, req=0x00"),
+            (0xC1, 0x04, "VENDOR|INTERFACE|IN, req=0x04"),
+            (0xC1, 0x05, "VENDOR|INTERFACE|IN, req=0x05"),
+        ]
+
+        working_read = None
+        for bm, req, desc in read_candidates:
+            try:
+                data = self.dev.ctrl_transfer(bm, req, 0x0000, 0x0000, 4, timeout=500)
+                val = int.from_bytes(bytes(data), 'little')
+                print(f"  READ {desc}: 0x{val:08X}")
+                if working_read is None:
+                    working_read = (bm, req)
+            except usb.core.USBError as e:
+                print(f"  READ {desc}: FAILED ({e})")
+
+        working_write = None
+        for bm, req, desc in write_candidates:
+            try:
+                self.dev.ctrl_transfer(bm, req, 0x0000, 0x0000,
+                                       b'\x00\x00\x00\x00', timeout=500)
+                print(f"  WRITE {desc}: no error")
+                if working_write is None:
+                    working_write = (bm, req)
+            except usb.core.USBError as e:
+                print(f"  WRITE {desc}: FAILED ({e})")
+
+        return working_read, working_write
+
     def diagnose(self) -> bool:
         """Practical diagnostic: verify the chip can RX and TX."""
         print("\n" + "=" * 50)
