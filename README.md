@@ -210,19 +210,47 @@ Any RTL8812AU or RTL8814AU-based USB dongle should work. The tool auto-detects b
 
 ## Installation
 
-### Prerequisites
-
-- Python 3.11+
-- [uv](https://docs.astral.sh/uv/) package manager
-- Supported USB Wi-Fi adapter (see table above)
-
-### Quick Start
+### One-Liner Setup
 
 ```bash
 git clone https://github.com/udhaybhat00/airscope.git
 cd airscope
-uv sync --group dev && uv run airscope
+./scripts/setup.sh          # Linux/macOS
+# OR
+.\scripts\setup.ps1         # Windows (PowerShell)
 ```
+
+This installs libusb (if needed), syncs Python deps, and runs a pre-flight check. If everything passes, run:
+
+```bash
+uv run airscope
+```
+
+### Manual Setup
+
+| Step | macOS | Linux | Windows |
+|------|-------|-------|---------|
+| 1. Install uv | `brew install uv` | `curl ... \| sh` | `powershell -c "irm ... \| iex"` |
+| 2. Install libusb | `brew install libusb` | `sudo apt install libusb-1.0-0` | (bundled with PyUSB) |
+| 3. Sync deps | `uv sync --group dev` | same | same |
+| 4. Driver | (auto via IOKit) | (udev rule on first run) | Zadig -> WinUSB |
+| 5. Verify | `uv run python -m airscope.doctor` | same | same |
+| 6. Run | `uv run airscope` | same | same |
+
+### If Your Adapter Isn't Detected
+
+```bash
+# List all USB devices to find your adapter's VID:PID
+uv run python -m airscope.doctor --list-usb
+
+# Add it (example: VID=13b1, PID=011b)
+uv run python -m airscope.doctor --add-adapter 13b1 011b
+
+# Re-run
+uv run airscope
+```
+
+Adapters are persisted in `~/.airscope/adapters.json` -- you only do this once.
 
 ### Standalone Binary (no Python needed at runtime)
 
@@ -230,16 +258,6 @@ uv sync --group dev && uv run airscope
 uv run pyinstaller airscope.spec --noconfirm --clean
 # Output: dist/airscope (Linux), dist/airscope.exe (Windows), dist/airscope (macOS)
 ```
-
-### One-Time Driver Setup (handled in-app)
-
-| OS | What happens | User action |
-|----|-------------|-------------|
-| Linux | udev rule + modprobe blocklist via pkexec | One sudo prompt |
-| macOS | IOKit authorization | Click "Allow" in dialog |
-| Windows | WinUSB driver install via UAC | One UAC prompt |
-
-Undo anytime from Splash → Uninstall, then re-plug the adapter.
 
 ---
 

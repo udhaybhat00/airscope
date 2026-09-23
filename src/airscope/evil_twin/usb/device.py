@@ -1,13 +1,49 @@
 """Cross-platform USB device abstraction."""
 
+import json
 import os
 import platform
 import logging
+from pathlib import Path
 
 log = logging.getLogger(__name__)
 
-USB_VID = 0x0BDA
-USB_PIDS = [0xC812, 0xA801, 0xC820, 0x3593]
+DEFAULT_ADAPTERS = [
+    (0x0BDA, 0xC812),
+    (0x0BDA, 0xA801),
+    (0x0BDA, 0xC820),
+    (0x0BDA, 0x3593),
+    (0x13B1, 0x011B),
+    (0x13B1, 0x008E),
+    (0x2357, 0x0601),
+    (0x2357, 0x0602),
+    (0x2001, 0x1234),
+]
+
+USER_ADAPTERS_FILE = Path.home() / ".airscope" / "adapters.json"
+
+
+def _load_user_adapters() -> list[tuple[int, int]]:
+    if USER_ADAPTERS_FILE.exists():
+        try:
+            data = json.loads(USER_ADAPTERS_FILE.read_text())
+            return [(int(x[0], 16), int(x[1], 16)) for x in data]
+        except Exception:
+            pass
+    return []
+
+
+def _save_user_adapters(adapters: list[tuple[int, int]]):
+    USER_ADAPTERS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    data = [[f"{v:04x}", f"{p:04x}"] for v, p in adapters]
+    USER_ADAPTERS_FILE.write_text(json.dumps(data, indent=2))
+
+
+def add_adapter(vid: int, pid: int):
+    adapters = _load_user_adapters()
+    if (vid, pid) not in adapters:
+        adapters.append((vid, pid))
+        _save_user_adapters(adapters)
 
 
 def _init_usb_backend():
@@ -47,21 +83,25 @@ def _init_usb_backend():
     )
 
 
-def find_adapter():
-    """Find the RTL8812AU/8814AU USB adapter. Cross-platform."""
+def find_adapter(vid: int = None, pid: int = None):
+    """Find the Wi-Fi adapter.
+
+    If vid/pid are provided, look for that specific device.
+    Otherwise, search all known + user-added adapters.
+    """
     _init_usb_backend()
     import usb.core
 
-    for pid in USB_PIDS:
-        dev = usb.core.find(idVendor=USB_VID, idProduct=pid)
-        if dev is not None:
-            log.info("Found adapter: %04x:%04x", USB_VID, pid)
-            return dev
+    if vid and pid:
+        return usb.core.find(idVendor=vid, idProduct=pid)
 
-    dev = usb.core.find(idVendor=USB_VID)
-    if dev is not None:
-        log.info("Found Realtek adapter (uncommon PID): %04x", dev.idProduct)
-        return dev
+    all_adapters = DEFAULT_ADAPTERS + _load_user_adapters()
+
+    for v, p in all_adapters:
+        dev = usb.core.find(idVendor=v, idProduct=p)
+        if dev is not None:
+            log.info("Found adapter: %04x:%04x", v, p)
+            return dev
 
     return None
 

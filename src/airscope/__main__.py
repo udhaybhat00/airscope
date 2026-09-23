@@ -225,6 +225,7 @@ def _web(args) -> int:
 def main() -> None:
     """Parse CLI args, then run the headless smoke test or launch the TUI."""
     import argparse
+    from pathlib import Path
 
     from airscope import __version__
 
@@ -259,7 +260,16 @@ def main() -> None:
     parser.add_argument("--no-browser", action="store_true", help="With --web: do not open the browser")
     parser.add_argument("--demo", action="store_true",
                         help="With --web: fake a wandering scan (no hardware needed)")
+    parser.add_argument("--doctor", action="store_true",
+                        help="Run pre-flight check and exit")
     args = parser.parse_args()
+
+    if args.doctor:
+        import sys as _sys
+        from airscope.doctor import run_doctor, print_report
+        results = run_doctor()
+        ok = print_report(results)
+        _sys.exit(0 if ok else 1)
 
     if args.web:
         import sys
@@ -286,6 +296,24 @@ def main() -> None:
 
     # Lazy import for WEP cracker ProcessPoolExecutor case
     from airscope.ui.app import AirscopeApp
+
+    config_dir = Path.home() / ".airscope"
+    first_run = not (config_dir / "has_run_before").exists()
+
+    if first_run:
+        from airscope.doctor import run_doctor, print_report
+        print("\nFirst run -- checking setup...\n")
+        results = run_doctor()
+        ok = print_report(results)
+
+        if not ok:
+            print("Fix the issues above, then run again.")
+            print("Or run: uv run python -m airscope.doctor --list-usb")
+            print("        uv run python -m airscope.doctor --add-adapter VID PID\n")
+            sys.exit(1)
+
+        config_dir.mkdir(parents=True, exist_ok=True)
+        (config_dir / "has_run_before").touch()
 
     cli_log_level = None
     if args.debug:
