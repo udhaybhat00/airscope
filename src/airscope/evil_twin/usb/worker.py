@@ -130,12 +130,16 @@ class UsbWorker:
     - Beacon: timer-based, sends pre-built beacon every 100ms
     - Deauth: timer-based, sends pre-built deauth frames at configured rate
     - Disconnect: detects USB removal, logs + notifies TUI, stops cleanly
+
+    When ``rtl_ap`` is provided (Rtl8812auAP instance), frames are
+    wrapped with RTL8812AU TX/RX descriptors for hardware AP mode.
     """
 
     def __init__(self, usb_dev, ep_rx: int, ep_tx: int,
                  ap_state_machine, beacon_frame: bytes,
                  deauth_frames: list[bytes], deauth_interval: float = 0.1,
-                 beacon_interval: float = 0.1):
+                 beacon_interval: float = 0.1,
+                 rtl_ap=None):
         self._dev = usb_dev
         self._ep_rx = ep_rx
         self._ep_tx = ep_tx
@@ -144,6 +148,7 @@ class UsbWorker:
         self._deauth_frames = deauth_frames
         self._deauth_interval = deauth_interval
         self._beacon_interval = beacon_interval
+        self._rtl_ap = rtl_ap
 
         self._tx_queue: queue.PriorityQueue = queue.PriorityQueue()
         self._running = False
@@ -206,7 +211,13 @@ class UsbWorker:
                 data = self._dev.read(self._ep_rx, 4096, timeout=5)
                 if data:
                     self._rx_count += 1
-                    self._ap.handle_rx(bytes(data))
+                    raw = bytes(data)
+                    if self._rtl_ap:
+                        frame, mac_id = self._rtl_ap.parse_rx_descriptor(raw)
+                        if frame is not None:
+                            self._ap.handle_rx(frame)
+                    else:
+                        self._ap.handle_rx(raw)
             except Exception as e:
                 if self._is_disconnect_error(e):
                     self._handle_disconnect(str(e))
@@ -216,7 +227,11 @@ class UsbWorker:
 
             if now >= next_beacon:
                 try:
-                    self._dev.write(self._ep_tx, self._beacon, timeout=50)
+                    tx_data = self._beacon
+                    if self._rtl_ap:
+                        tx_data = self._rtl_ap.wrap_frame_with_tx_desc(
+                            b'\xff' * 6, tx_data, pkt_type=0x00)
+                    self._dev.write(self._ep_tx, tx_data, timeout=50)
                     self._tx_count += 1
                 except Exception as e:
                     if self._is_disconnect_error(e):
@@ -227,7 +242,11 @@ class UsbWorker:
             if self._deauth_frames and now >= next_deauth:
                 try:
                     frame = self._deauth_frames[deauth_idx % len(self._deauth_frames)]
-                    self._dev.write(self._ep_tx, frame, timeout=50)
+                    tx_data = frame
+                    if self._rtl_ap:
+                        tx_data = self._rtl_ap.wrap_frame_with_tx_desc(
+                            b'\xff' * 6, tx_data, pkt_type=0x00)
+                    self._dev.write(self._ep_tx, tx_data, timeout=50)
                     self._tx_count += 1
                     deauth_idx += 1
                 except Exception as e:
@@ -253,7 +272,11 @@ class UsbWorker:
         while not self._tx_queue.empty():
             try:
                 tx_frame = self._tx_queue.get_nowait()
-                self._dev.write(self._ep_tx, tx_frame.data, timeout=50)
+                tx_data = tx_frame.data
+                if self._rtl_ap:
+                    tx_data = self._rtl_ap.wrap_frame_with_tx_desc(
+                        b'\xff' * 6, tx_data, pkt_type=0x00)
+                self._dev.write(self._ep_tx, tx_data, timeout=50)
                 self._tx_count += 1
             except Exception as e:
                 if self._is_disconnect_error(e):

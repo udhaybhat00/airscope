@@ -60,6 +60,25 @@ def setup_device(dev) -> tuple[int, int]:
     return ep_rx, ep_tx
 
 
+def get_ctrl_endpoint(dev) -> int:
+    """Get the control endpoint address (EP0) for vendor requests.
+
+    RTL8812AU uses EP0 control transfers for register read/write,
+    H2C commands, and AP mode configuration. The endpoint address
+    is always 0x00 for the default control pipe.
+    """
+    try:
+        import usb.util
+        cfg = dev.get_active_configuration()
+        intf = cfg[(0, 0)]
+        for ep in intf:
+            if usb.util.endpoint_type(ep.bmAttributes) == usb.util.ENDPOINT_TYPE_CONTROL:
+                return ep.bEndpointAddress
+    except Exception:
+        pass
+    return 0x00  # EP0 default control pipe
+
+
 def platform_setup():
     """Platform-specific initialization at startup."""
     system = platform.system()
