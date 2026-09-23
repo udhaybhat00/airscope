@@ -30,17 +30,27 @@ _USB_REQ_WRITE = 0x05
 _USB_REQ_H2C   = 0x01
 
 # ---------------------------------------------------------------------------
-# RCR (Receive Control Register) - candidate addresses by firmware version
+# RCR (Receive Control Register) - from kernel driver rtl8812au_spec.h
+# REG_RCR = 0x0608 (NOT 0x014C which is REG_ADCCLK)
 # ---------------------------------------------------------------------------
-RCR_CANDIDATES = [0x14C, 0x148, 0x150, 0x0400]
+RCR_ADDR = 0x0608
+RCR_CANDIDATES = [0x0608, 0x04AC, 0x0400, 0x14C]
 
-# RCR bit definitions
-RCR_APM         = 1 << 3
-RCR_ADF         = 1 << 4
-RCR_AB          = 1 << 15
-RCR_AM          = 1 << 14
-RCR_CBSSID_DATA = 1 << 18
-RCR_CBSSID_BCN  = 1 << 23
+# Monitor mode RCR value from hw_var_set_monitor()
+# RCR_AAP|APM|AM|AB|APWRMGT|ADF|ACF|AMF|APP_PHYST_RXFF|APPFCS
+RCR_MONITOR = 0x9000382F
+
+# RXFLTMAP2: accept all frame types in monitor mode
+REG_RXFLTMAP2 = 0x06A4
+
+# RCR bit definitions (for reference/comparison)
+RCR_APM         = 1 << 1
+RCR_AB          = 1 << 3
+RCR_AM          = 1 << 2
+RCR_ADF         = 1 << 6
+RCR_ACF         = 1 << 7
+RCR_AMF         = 1 << 8
+RCR_APPFCS      = 1 << 31
 
 # ---------------------------------------------------------------------------
 # Other registers
@@ -142,43 +152,44 @@ class Rtl8812auAP:
     # ------------------------------------------------------------------
 
     def init_monitor_rx(self) -> bool:
-        """Set RCR to accept all frames. Try known addresses.
+        """Set RCR to accept all frames for monitor mode.
 
-        This is the ONLY firmware config needed for EvilTwin.
-        The chip is already in monitor mode; we just need to tell it
-        to forward all received frames to USB RX.
-
-        Some firmware versions use write-only registers (readback
-        doesn't match), so we accept any successful write as success.
+        Uses the kernel driver's hw_var_set_monitor() values:
+        - RCR at REG_RCR (0x0608) = 0x9000382F (accept all, append FCS+PHY)
+        - RXFLTMAP2 (0x06A4) = 0xFFFF (accept all frame types)
         """
         for addr in RCR_CANDIDATES:
             try:
-                write_reg(self.dev, addr, 0xFFFFFFFF)
+                write_reg(self.dev, addr, RCR_MONITOR)
                 time.sleep(0.05)
                 try:
                     val = read_reg(self.dev, addr)
                 except Exception:
                     val = None
-                log.info("[rtl8812au] RCR write to 0x%03X OK (readback=%s)",
-                         addr, f"0x{val:08X}" if val is not None else "N/A")
-                self._rcr_addr = addr
-                return True
+                if val is not None:
+                    log.info("[rtl8812au] RCR write to 0x%03X OK (readback=0x%08X)",
+                             addr, val)
+                    self._rcr_addr = addr
+                    write_reg(self.dev, REG_RXFLTMAP2, 0xFFFF)
+                    return True
+                log.debug("[rtl8812au] RCR 0x%03X read failed", addr)
             except Exception:
                 continue
 
-        log.warning("[rtl8812au] RCR write failed at all candidates, trying 0x14C blind")
-        self._rcr_addr = 0x14C
+        log.warning("[rtl8812au] RCR write failed at all candidates, trying 0x0608 blind")
+        self._rcr_addr = RCR_ADDR
         try:
-            write_reg(self.dev, 0x14C, 0xFFFFFFFF)
+            write_reg(self.dev, RCR_ADDR, RCR_MONITOR)
+            write_reg(self.dev, REG_RXFLTMAP2, 0xFFFF)
         except Exception:
             pass
         return True
 
     def deinit_monitor_rx(self):
-        """Reset RCR to default (monitor mode, reduced RX)."""
+        """Reset RCR to default (station mode, reduced RX)."""
         if self._rcr_addr is not None:
             try:
-                write_reg(self.dev, self._rcr_addr, RCR_AB | RCR_AM)
+                write_reg(self.dev, self._rcr_addr, 0xF40060CE)
             except Exception:
                 pass
         self._stations.clear()
