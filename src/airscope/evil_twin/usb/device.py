@@ -88,7 +88,8 @@ def find_adapter(vid: int = None, pid: int = None):
     """Find the Wi-Fi adapter.
 
     If vid/pid are provided, look for that specific device.
-    Otherwise, search all known + user-added adapters.
+    Otherwise, search all known + user-added adapters, then fall back
+    to VID-only match for any Realtek adapter.
     """
     _init_usb_backend()
     import usb.core
@@ -102,6 +103,12 @@ def find_adapter(vid: int = None, pid: int = None):
         dev = usb.core.find(idVendor=v, idProduct=p)
         if dev is not None:
             log.info("Found adapter: %04x:%04x", v, p)
+            return dev
+
+    for vid_match in (0x0BDA, 0x13B1, 0x2357, 0x2001):
+        dev = usb.core.find(idVendor=vid_match)
+        if dev is not None:
+            log.info("Found adapter (VID-only match): %04x:%04x", vid_match, dev.idProduct)
             return dev
 
     return None
