@@ -5,7 +5,7 @@
 <h1 align="center">airscope</h1>
 
 <p align="center">
-  <strong>Cross-platform USB Wi-Fi security auditor — pure Python, zero kernel drivers</strong>
+  <strong>Cross-platform USB Wi-Fi security auditor — pure Python, zero kernel drivers, no external tools</strong>
 </p>
 
 <p align="center">
@@ -82,6 +82,18 @@
 
 ---
 
+## Screenshots
+
+<p align="center">
+  <img src="assets/demo-tour.gif" alt="airscope TUI walkthrough: scanner, focus, attack, vault" width="800">
+</p>
+
+<p align="center"><em>Live scanner → target focus → EvilTwin attack → vault — all in the terminal</em></p>
+
+> Watch the TUI in action → [Video demo coming soon](#)
+
+---
+
 ## Features
 
 ### Reconnaissance
@@ -109,7 +121,7 @@
 - **WPS PixieDust** — offline PIN recovery from beacon
 - **WPS PIN brute-force** — resumable
 - **WEP suite** — ARP replay, ChopChop, fake auth, PTW key recovery
-- **Batch "Auto Attack"** — sequential campaigns across multiple targets
+- **Batch "Auto Attack"** — sequential campaigns across multiple targets with progress bar and plain-English skip reasons
 
 ### Analysis & Output
 
@@ -122,12 +134,13 @@
 ### UI / UX
 
 - **Textual TUI** — asyncio-based, 60fps render
-- **Web dashboard** — optional, same data as TUI (`--web`)
+- **Web dashboard** — browser-based view with global nav, adapter status, first-run onboarding (3 slides + legal acknowledgement); optional, same data as TUI (`--web`)
 - **Signal Noir theme family** — dark + high-contrast variants
-- **Animated startup banner**
+- **Animated startup banner** — 3-line animated message during 5-10s init
 - **Plain-English attack cards** with descriptions
 - **3-step progress indicator** for EvilTwin
-- **Scanner freeze mode** (`F` key)
+- **Scanner freeze mode** — press `F` to stop re-sorting while selecting target
+- **Log translation** — 15+ technical events mapped to plain English (TUI + web)
 - **Keyboard-first navigation** (all actions bindable)
 
 ---
@@ -280,7 +293,7 @@ Needs the web extras once: `uv sync --extra web`.
 | Flag | Description |
 |------|-------------|
 | `--version` | Print version and exit |
-| `--auto` | Headless batch mode |
+| `--auto` | Headless batch mode: scan then attack all targets |
 | `--list` | Print APs in range and exit |
 | `--targets` | Comma-separated BSSIDs or SSID substrings |
 | `--scan-secs` | Seconds to scan before attacking (default 30) |
@@ -430,13 +443,14 @@ uv run ruff check src/           # lint only (never format)
 
 | Problem | Cause | Fix |
 |---------|-------|-----|
-| "No adapter found" | Wrong driver (Windows) | Run Zadig → WinUSB |
-| "Permission denied" (Linux) | No udev rule | Press START → allow pkexec |
-| Adapter not showing on macOS | IOKit authorization denied | System Settings → Privacy → allow |
-| EvilTwin: clients don't associate | Firmware data-frame RX not enabled | Check adapter firmware version |
-| EvilTwin: portal doesn't appear | DNS blackhole not responding | Check logs for DNS query handling |
-| TUI lag on macOS | USB I/O on event loop | Ensure USB worker thread is active |
-| PyInstaller binary crashes | Missing USB libs | Install libusb (Linux) / WinUSB (Windows) |
+| "No adapter found" (Windows) | Wrong driver (MUSB/Android) | Run [Zadig](https://zadig.akeo.ie/) → replace with WinUSB |
+| "Permission denied" (Linux) | No udev rule | Press START → allow pkexec prompt |
+| Adapter invisible (macOS) | IOKit authorization denied | System Settings → Privacy & Security → allow |
+| EvilTwin: clients see SSID but don't connect | Auth/assoc response not sent | Check USB worker thread is running (logs) |
+| EvilTwin: connected but no portal | DHCP or DNS not responding | Check logs for "DHCP: Discover" / "DNS: Query" |
+| TUI lags during attack | USB I/O blocking event loop | Ensure `UsbWorker` thread is active (not inline) |
+| PyInstaller binary crashes | Missing libusb | Install `libusb-1.0` (Linux) or WinUSB (Windows) |
+| Adapter works in Linux, not macOS | IOKit vs libusb timing | Try different USB port (USB 2.0 preferred) |
 
 ---
 
@@ -486,6 +500,6 @@ Read [AGENTS.md](AGENTS.md) for AI-assisted development conventions.
 ---
 
 <p align="center">
-  Built with ❤️ and too much coffee<br>
-  Star the repo if it helped: <a href="https://github.com/udhaybhat00/airscope">github.com/udhaybhat00/airscope</a>
+  Built with ☕ and too much Wi-Fi. Star ⭐ if it helped.<br>
+  <a href="https://github.com/udhaybhat00/airscope">github.com/udhaybhat00/airscope</a>
 </p>
