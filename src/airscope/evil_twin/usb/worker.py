@@ -28,6 +28,7 @@ class UsbWorker:
     - TX: priority queue for outgoing frames (mgmt > dhcp > http > beacon > deauth)
     - Beacon: timer-based, sends pre-built beacon every 100ms
     - Deauth: timer-based, sends pre-built deauth frames at configured rate
+    - Disconnect: detects USB removal, logs + notifies TUI, stops cleanly
     """
 
     def __init__(self, usb_dev, ep_rx: int, ep_tx: int,
@@ -50,6 +51,7 @@ class UsbWorker:
         self._rx_count = 0
         self._last_tui_update = 0.0
         self._stats_callback: Optional[Callable] = None
+        self._on_disconnect: Optional[Callable] = None
 
     def start(self):
         self._running = True
@@ -61,14 +63,35 @@ class UsbWorker:
         self._running = False
         if self._thread:
             self._thread.join(timeout=3.0)
+        self._drain_queue()
         log.info("USB Worker stopped")
 
     def set_stats_callback(self, callback: Callable):
         self._stats_callback = callback
 
+    def set_disconnect_callback(self, callback: Callable):
+        self._on_disconnect = callback
+
     def enqueue_tx(self, frame: bytes, priority: int = 2):
         self._tx_queue.put(TxFrame(data=frame, priority=priority,
                                    timestamp=time.monotonic()))
+
+    def _drain_queue(self):
+        while not self._tx_queue.empty():
+            try:
+                self._tx_queue.get_nowait()
+            except queue.Empty:
+                break
+
+    def _handle_disconnect(self, reason: str):
+        log.warning(f"USB disconnected: {reason}")
+        self._running = False
+        self._drain_queue()
+        if self._on_disconnect:
+            try:
+                self._on_disconnect(reason)
+            except Exception:
+                pass
 
     def _run(self):
         next_beacon = time.monotonic()
@@ -83,24 +106,21 @@ class UsbWorker:
                 if data:
                     self._rx_count += 1
                     self._ap.handle_rx(bytes(data))
-            except Exception:
-                pass
+            except Exception as e:
+                if self._is_disconnect_error(e):
+                    self._handle_disconnect(str(e))
+                    return
 
-            while not self._tx_queue.empty():
-                try:
-                    tx_frame = self._tx_queue.get_nowait()
-                    self._dev.write(self._ep_tx, tx_frame.data, timeout=50)
-                    self._tx_count += 1
-                except Exception as e:
-                    log.debug(f"TX error: {e}")
-                    break
+            self._drain_pending_tx()
 
             if now >= next_beacon:
                 try:
                     self._dev.write(self._ep_tx, self._beacon, timeout=50)
                     self._tx_count += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    if self._is_disconnect_error(e):
+                        self._handle_disconnect(str(e))
+                        return
                 next_beacon = now + self._beacon_interval
 
             if self._deauth_frames and now >= next_deauth:
@@ -109,8 +129,10 @@ class UsbWorker:
                     self._dev.write(self._ep_tx, frame, timeout=50)
                     self._tx_count += 1
                     deauth_idx += 1
-                except Exception:
-                    pass
+                except Exception as e:
+                    if self._is_disconnect_error(e):
+                        self._handle_disconnect(str(e))
+                        return
                 next_deauth = now + self._deauth_interval
 
             if self._stats_callback and now - self._last_tui_update > 0.1:
@@ -125,6 +147,25 @@ class UsbWorker:
                     pass
 
             time.sleep(0.001)
+
+    def _drain_pending_tx(self):
+        while not self._tx_queue.empty():
+            try:
+                tx_frame = self._tx_queue.get_nowait()
+                self._dev.write(self._ep_tx, tx_frame.data, timeout=50)
+                self._tx_count += 1
+            except Exception as e:
+                if self._is_disconnect_error(e):
+                    self._handle_disconnect(str(e))
+                    return
+                break
+
+    @staticmethod
+    def _is_disconnect_error(exc: Exception) -> bool:
+        import usb.core
+        if isinstance(exc, usb.core.USBError):
+            return exc.errno in (19, 16, None)
+        return False
 
     @property
     def stats(self) -> dict:
