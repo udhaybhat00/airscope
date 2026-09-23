@@ -1,27 +1,28 @@
-"""Standalone RTL8812AU AP-mode diagnostic.
+"""Standalone RTL8812AU monitor mode diagnostic.
 
 Usage:
-    uv run python -m airscope.diagnose                # run 8-step diagnostic
+    uv run python -m airscope.diagnose                # 4-step practical test
     uv run python -m airscope.diagnose --verbose      # debug logging
+    uv run python -m airscope.diagnose --sniff        # sniff for auth/assoc frames
     uv run python -m airscope.diagnose --start-ap     # start live AP
-    uv run python -m airscope.diagnose --sniff        # sniff for auth frames
 """
 
 import sys
 import time
+import struct
 import logging
 import argparse
 
 
 def main():
-    parser = argparse.ArgumentParser(description="RTL8812AU AP-mode diagnostic")
+    parser = argparse.ArgumentParser(description="RTL8812AU monitor mode diagnostic")
     parser.add_argument("-v", "--verbose", action="store_true", help="Debug logging")
+    parser.add_argument("--sniff", action="store_true",
+                        help="Sniff for incoming 802.11 frames")
     parser.add_argument("--start-ap", action="store_true",
                         help="Start a live AP (requires --ssid and --channel)")
-    parser.add_argument("--sniff", action="store_true",
-                        help="Sniff for incoming auth/assoc frames")
-    parser.add_argument("--ssid", default="TestNet", help="SSID for --start-ap mode")
-    parser.add_argument("--channel", type=int, default=6, help="Channel for --start-ap mode")
+    parser.add_argument("--ssid", default="TestNet", help="SSID for --start-ap")
+    parser.add_argument("--channel", type=int, default=6, help="Channel for --start-ap")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -35,27 +36,22 @@ def main():
     from .evil_twin.usb.device import find_adapter, setup_device
     from .evil_twin.usb.rtl8812au_ap import Rtl8812auAP
 
-    # --- Find adapter ---
     log.info("Searching for RTL8812AU/8814AU adapter...")
     dev = find_adapter()
     if dev is None:
         log.error("No supported adapter found.")
-        log.error("Check: USB connected, driver installed (WinUSB on Windows).")
         sys.exit(1)
 
     log.info("Found: %04x:%04x", dev.idVendor, dev.idProduct)
-
-    # --- Setup ---
     ep_rx, ep_tx, ep_ctrl = setup_device(dev)
     log.info("Endpoints: RX=0x%02x  TX=0x%02x  CTRL=0x%02x", ep_rx, ep_tx, ep_ctrl)
 
-    # --- Run diagnostic ---
-    ap = Rtl8812auAP(dev, ep_ctrl=ep_ctrl)
+    ap = Rtl8812auAP(dev, ep_rx=ep_rx, ep_tx=ep_tx, ep_ctrl=ep_ctrl)
 
     if args.start_ap:
-        _run_start_ap(ap, dev, ep_rx, ep_tx, args, log)
+        _run_start_ap(ap, args, log)
     elif args.sniff:
-        _run_sniff(ap, dev, ep_rx, ep_tx, log)
+        _run_sniff(ap, log)
     else:
         _run_diagnostic(ap, log)
 
@@ -68,128 +64,173 @@ def main():
 
 
 def _run_diagnostic(ap, log):
-    """Run the 8-step diagnostic."""
-    print("\n" + "=" * 60)
-    print("  RTL8812AU AP-Mode Diagnostic")
-    print("=" * 60 + "\n")
+    print("\n" + "=" * 50)
+    print("  RTL8812AU Practical Diagnostic")
+    print("=" * 50 + "\n")
 
     try:
-        ap.diagnose()
-        print("\n" + "=" * 60)
-        print("  ALL STEPS PASSED -- AP mode is ready")
-        print("=" * 60)
+        ok = ap.diagnose()
+        if ok:
+            print("\n" + "=" * 50)
+            print("  ALL STEPS PASSED -- chip is ready")
+            print("=" * 50)
+        else:
+            sys.exit(1)
     except Exception as e:
-        print(f"\n{'=' * 60}")
-        print(f"  FAILED: {e}")
-        print(f"{'=' * 60}")
+        print(f"\n  FAILED: {e}")
         import traceback
         traceback.print_exc()
         sys.exit(1)
     finally:
-        try:
-            ap.deinit_ap_mode()
-        except Exception:
-            pass
+        ap.deinit_monitor_rx()
 
 
-def _run_start_ap(ap, dev, ep_rx, ep_tx, args, log):
-    """Start a live AP and send beacons."""
-    from .evil_twin.ap.ap_core import APStateMachine
-    from .evil_twin.ap.frames import craft_beacon
-    from .evil_twin.usb.worker import UsbWorker
+def _run_sniff(ap, log):
+    """Listen for 802.11 frames and print auth/assoc/data."""
+    import usb.core
 
-    ssid = args.ssid
-    channel = args.channel
-    ap_mac = b'\x00\x11\x22\x33\x44\x55'
+    ap.init_monitor_rx()
 
-    print(f"\n{'=' * 60}")
-    print(f"  Starting AP: SSID={ssid}  Channel={channel}")
-    print(f"  BSSID={':'.join(f'{b:02x}' for b in ap_mac)}")
+    print(f"\n{'=' * 50}")
+    print("  Sniffing for 802.11 frames...")
+    print("  Move near a Wi-Fi router to see beacons")
     print("  Press Ctrl+C to stop")
-    print(f"{'=' * 60}\n")
-
-    ap.init_ap_mode(ap_mac, ssid, channel)
-
-    beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
-
-    ap_sm = APStateMachine(ap_mac, ssid, channel, usb_tx=lambda f, **kw: None)
-
-    worker = UsbWorker(
-        usb_dev=dev,
-        ep_rx=ep_rx,
-        ep_tx=ep_tx,
-        ap_state_machine=ap_sm,
-        beacon_frame=beacon,
-        deauth_frames=[],
-        deauth_interval=0.1,
-        beacon_interval=0.1,
-        rtl_ap=ap,
-    )
-    worker.start()
-
-    try:
-        while True:
-            time.sleep(1)
-            stats = worker.stats
-            clients = len(ap._stations)
-            print(f"\r  TX={stats['tx']}  RX={stats['rx']}  Clients={clients}  ", end="", flush=True)
-    except KeyboardInterrupt:
-        print("\n\n  Stopping AP...")
-    finally:
-        worker.stop()
-        ap.deinit_ap_mode()
-        print("  AP stopped.")
-
-
-def _run_sniff(ap, dev, ep_rx, ep_tx, log):
-    """Sniff for incoming auth/assoc frames."""
-    from .evil_twin.ap.frames import parse_fc, FC_TYPE_MGMT
-
-    print(f"\n{'=' * 60}")
-    print("  Sniffing for auth/assoc frames...")
-    print("  Connect a device to see traffic")
-    print("  Press Ctrl+C to stop")
-    print(f"{'=' * 60}\n")
+    print(f"{'=' * 50}\n")
 
     frame_count = 0
     try:
         while True:
             try:
-                data = dev.read(ep_rx, 4096, timeout=500)
-                if data:
-                    raw = bytes(data)
-                    frame, mac_id = ap.parse_rx_descriptor(raw)
-                    if frame and len(frame) >= 2:
-                        fc_type, subtype, to_ds, from_ds = parse_fc(frame)
-                        frame_count += 1
-                        ts = time.strftime("%H:%M:%S")
-                        if fc_type == FC_TYPE_MGMT:
-                            type_names = {
-                                0x00: "ASSOC_REQ", 0x01: "ASSOC_RESP",
-                                0x04: "PROBE_REQ", 0x05: "PROBE_RESP",
-                                0x08: "BEACON", 0x0B: "AUTH",
-                                0x0A: "DISASSOC", 0x0C: "DEAUTH",
-                            }
-                            name = type_names.get(subtype, f"SUBTYPE_{subtype:02x}")
-                            if len(frame) >= 22:
-                                sa = frame[10:16]
-                                sa_str = ':'.join(f'{b:02x}' for b in sa)
-                                print(f"  [{ts}] #{frame_count} {name} from {sa_str} mac_id={mac_id}")
-                            else:
-                                print(f"  [{ts}] #{frame_count} {name} (short) mac_id={mac_id}")
-                        else:
-                            if len(frame) >= 22:
-                                sa = frame[10:16]
-                                sa_str = ':'.join(f'{b:02x}' for b in sa)
-                                print(f"  [{ts}] #{frame_count} DATA from {sa_str} mac_id={mac_id} len={len(frame)}")
-            except Exception as e:
-                import usb.core
-                if isinstance(e, usb.core.USBError) and e.errno == 19:
-                    print("\n  USB device disconnected.")
+                data = ap.dev.read(ap.ep_rx, 4096, timeout=1000)
+                if not data:
+                    continue
+
+                frame = ap._try_parse_rx(bytes(data))
+                if frame is None or len(frame) < 2:
+                    continue
+
+                fc = struct.unpack('<H', frame[0:2])[0]
+                ftype = (fc >> 2) & 0x03
+                subtype = (fc >> 4) & 0x0F
+                frame_count += 1
+                ts = time.strftime("%H:%M:%S")
+
+                if ftype == 0:  # Management
+                    _da, sa, bssid = frame[4:10], frame[10:16], frame[16:22]
+                    names = {
+                        0x00: "ASSOC_REQ", 0x01: "ASSOC_RESP",
+                        0x04: "PROBE_REQ", 0x05: "PROBE_RESP",
+                        0x08: "BEACON", 0x0B: "AUTH",
+                        0x0A: "DISASSOC", 0x0C: "DEAUTH",
+                    }
+                    name = names.get(subtype, f"MGMT_{subtype:02x}")
+                    if subtype in (0x08, 0x05):  # Beacon/Probe Resp
+                        ssid = ap._extract_ssid(frame)
+                        print(f"  [{ts}] #{frame_count} {name} {bssid.hex(':')} SSID='{ssid}'")
+                    elif subtype == 0x04:  # Probe Req
+                        ssid = ap._extract_ssid(frame)
+                        print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')} SSID='{ssid}'")
+                    else:
+                        print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')}")
+
+                elif ftype == 2:  # Data
+                    ra, ta = frame[4:10], frame[10:16]
+                    print(f"  [{ts}] #{frame_count} DATA {ta.hex(':')} -> {ra.hex(':')} ({len(frame)} bytes)")
+
+            except usb.core.USBError as e:
+                if e.errno == 19:
+                    print("\n  USB disconnected.")
                     break
                 continue
     except KeyboardInterrupt:
         print(f"\n\n  Stopped. Total frames: {frame_count}")
+
+    ap.deinit_monitor_rx()
+
+
+def _run_start_ap(ap, args, log):
+    """Start a fake AP: RCR + beacon TX + auth/assoc response."""
+    import usb.core
+    from .evil_twin.ap.frames import craft_beacon, craft_auth_response, craft_assoc_response
+
+    ap_mac = ap.read_efuse_mac() or b'\x02\x00\x00\x00\x00\x01'
+    ssid = args.ssid
+    channel = args.channel
+
+    ap.init_monitor_rx()
+    beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
+
+    print(f"\n{'=' * 50}")
+    print(f"  Starting AP: SSID='{ssid}'")
+    print(f"  BSSID={ap_mac.hex(':')}  Channel={channel}")
+    print("  Listening for auth/assoc requests...")
+    print("  Press Ctrl+C to stop")
+    print(f"{'=' * 50}\n")
+
+    mgmt_seq = 1
+    next_beacon = time.monotonic()
+    beacon_count = 0
+
+    try:
+        while True:
+            now = time.monotonic()
+
+            if now >= next_beacon:
+                try:
+                    ap.dev.write(ap.ep_tx, beacon, timeout=50)
+                    beacon_count += 1
+                except Exception:
+                    pass
+                next_beacon = now + 0.1
+
+            try:
+                data = ap.dev.read(ap.ep_rx, 4096, timeout=10)
+                if not data:
+                    continue
+
+                frame = ap._try_parse_rx(bytes(data))
+                if frame is None or len(frame) < 24:
+                    continue
+
+                fc = struct.unpack('<H', frame[0:2])[0]
+                ftype = (fc >> 2) & 0x03
+                subtype = (fc >> 4) & 0x0F
+
+                if ftype != 0:
+                    continue
+
+                _da, sa, _bssid = frame[4:10], frame[10:16], frame[16:22]
+
+                if subtype == 0x0B:  # Auth Request
+                    print(f"  [AUTH REQ] from {sa.hex(':')}")
+                    resp = craft_auth_response(sa, ap_mac, mgmt_seq)
+                    mgmt_seq = (mgmt_seq + 1) & 0xFFF
+                    ap.dev.write(ap.ep_tx, resp, timeout=50)
+                    print(f"  [AUTH RESP] sent to {sa.hex(':')}")
+
+                elif subtype == 0x00:  # Assoc Request
+                    print(f"  [ASSOC REQ] from {sa.hex(':')}")
+                    resp = craft_assoc_response(sa, ap_mac, aid=1, seq=mgmt_seq)
+                    mgmt_seq = (mgmt_seq + 1) & 0xFFF
+                    ap.dev.write(ap.ep_tx, resp, timeout=50)
+                    print(f"  [ASSOC RESP] sent to {sa.hex(':')} (AID=1)")
+                    ap.station_assoc(sa)
+
+                elif subtype == 0x04:  # Probe Request
+                    probe_ssid = ap._extract_ssid(frame)
+                    if probe_ssid == ssid or probe_ssid == '':
+                        print(f"  [PROBE REQ] from {sa.hex(':')} SSID='{probe_ssid}'")
+
+            except usb.core.USBError as e:
+                if e.errno == 19:
+                    print("\n  USB disconnected.")
+                    break
+                continue
+
+    except KeyboardInterrupt:
+        print(f"\n\n  Stopped. Beacons sent: {beacon_count}")
+
+    ap.deinit_monitor_rx()
 
 
 if __name__ == "__main__":

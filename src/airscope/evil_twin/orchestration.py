@@ -166,16 +166,14 @@ class EvilTwinAttack:
         from .ap.ap_core import APStateMachine
         from .ap.frames import craft_beacon
         from .usb.rtl8812au_ap import Rtl8812auAP
-        from .usb.device import get_ctrl_endpoint
 
         beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
 
         deauth_frames = []
 
-        # Initialize RTL8812AU AP mode (configures chip to accept auth/assoc/data)
-        ep_ctrl = get_ctrl_endpoint(adapter)
-        rtl_ap = Rtl8812auAP(dev=adapter, ep_ctrl=ep_ctrl)
-        rtl_ap.init_ap_mode(ap_mac, ssid, channel)
+        # Initialize monitor mode RX (RCR = accept all frames)
+        rtl_ap = Rtl8812auAP(dev=adapter, ep_rx=ep_rx, ep_tx=ep_tx)
+        rtl_ap.init_monitor_rx()
         self._rtl_ap = rtl_ap
 
         ap_sm = APStateMachine(ap_mac, ssid, channel,
