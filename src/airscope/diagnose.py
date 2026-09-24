@@ -32,6 +32,8 @@ def main():
                         help="Start a live AP (requires --ssid and --channel)")
     parser.add_argument("--ssid", default="TestNet", help="SSID for --start-ap")
     parser.add_argument("--channel", type=int, default=6, help="Channel for --start-ap")
+    parser.add_argument("--iface", default=None,
+                        help="WiFi interface for capture (macOS: en0, Linux: wlan0)")
     args = parser.parse_args()
 
     level = logging.DEBUG if args.verbose else logging.INFO
@@ -220,9 +222,6 @@ def _run_brute_reg(ap):
 
 def _run_sniff(ap, args, log):
     """Listen for 802.11 frames and print auth/assoc/data."""
-    import usb.core
-
-    ap.init_monitor_rx()
     verbose = args.verbose
 
     print(f"\n{'=' * 50}")
@@ -231,92 +230,107 @@ def _run_sniff(ap, args, log):
     print("  Press Ctrl+C to stop")
     print(f"{'=' * 50}\n")
 
+    from .evil_twin.usb.capture import CaptureSession
+    cap = CaptureSession()
+    system = __import__("platform").system()
+
+    if system == "Darwin":
+        iface = args.iface or "en0"
+        cap.open(interface=iface, channel=6)
+        print(f"  Using libpcap on {iface} (macOS capture backend)")
+    else:
+        cap.open(usb_dev=ap.dev, ep_rx=ap.ep_rx)
+        ap.init_monitor_rx()
+        print(f"  Using USB bulk reads (EP 0x{ap.ep_rx:02x})")
+
     frame_count = 0
     reject_count = 0
     try:
         while True:
-            try:
-                data = ap.dev.read(ap.ep_rx, 4096, timeout=1000)
-                if not data:
-                    continue
-
-                raw = bytes(data)
-                frame = ap._try_parse_rx(raw)
-                if frame is None or len(frame) < 2:
-                    reject_count += 1
-                    if verbose:
-                        hex_head = ' '.join(f'{b:02x}' for b in raw[:32])
-                        print(f"  [REJECTED] {len(raw)} bytes: {hex_head}")
-                        for offset in range(0, min(len(raw) - 2, 64), 2):
-                            fc = struct.unpack('<H', raw[offset:offset + 2])[0]
-                            ftype = (fc >> 4) & 0x03
-                            if ftype in (0, 1, 2) and fc != 0:
-                                print(f"         -> Possible FC at offset {offset}: "
-                                      f"0x{fc:04x} (type={ftype})")
-                                break
-                    continue
-
-                fc = struct.unpack('<H', frame[0:2])[0]
-                ftype = (fc >> 2) & 0x03
-                subtype = (fc >> 4) & 0x0F
-                frame_count += 1
-                ts = time.strftime("%H:%M:%S")
-
-                if ftype == 0:  # Management
-                    _da, sa, bssid = frame[4:10], frame[10:16], frame[16:22]
-                    names = {
-                        0x00: "ASSOC_REQ", 0x01: "ASSOC_RESP",
-                        0x04: "PROBE_REQ", 0x05: "PROBE_RESP",
-                        0x08: "BEACON", 0x0B: "AUTH",
-                        0x0A: "DISASSOC", 0x0C: "DEAUTH",
-                    }
-                    name = names.get(subtype, f"MGMT_{subtype:02x}")
-                    if subtype in (0x08, 0x05):
-                        ssid = ap._extract_ssid(frame)
-                        print(f"  [{ts}] #{frame_count} {name} "
-                              f"{bssid.hex(':')} SSID='{ssid}'")
-                    elif subtype == 0x04:
-                        ssid = ap._extract_ssid(frame)
-                        print(f"  [{ts}] #{frame_count} {name} "
-                              f"from {sa.hex(':')} SSID='{ssid}'")
-                    else:
-                        print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')}")
-
-                elif ftype == 2:  # Data
-                    ra, ta = frame[4:10], frame[10:16]
-                    print(f"  [{ts}] #{frame_count} DATA "
-                          f"{ta.hex(':')} -> {ra.hex(':')} ({len(frame)} bytes)")
-
-            except usb.core.USBError as e:
-                if e.errno == 19:
-                    print("\n  USB disconnected.")
-                    break
+            raw = cap.read_frame(timeout=1.0)
+            if raw is None:
                 continue
+
+            frame = ap._try_parse_rx(raw) if system != "Darwin" else raw
+            if frame is None or len(frame) < 2:
+                reject_count += 1
+                if verbose:
+                    hex_head = ' '.join(f'{b:02x}' for b in raw[:32])
+                    print(f"  [REJECTED] {len(raw)} bytes: {hex_head}")
+                continue
+
+            fc = struct.unpack('<H', frame[0:2])[0]
+            ftype = (fc >> 2) & 0x03
+            subtype = (fc >> 4) & 0x0F
+            frame_count += 1
+            ts = time.strftime("%H:%M:%S")
+
+            if ftype == 0:  # Management
+                _da, sa, bssid = frame[4:10], frame[10:16], frame[16:22]
+                names = {
+                    0x00: "ASSOC_REQ", 0x01: "ASSOC_RESP",
+                    0x04: "PROBE_REQ", 0x05: "PROBE_RESP",
+                    0x08: "BEACON", 0x0B: "AUTH",
+                    0x0A: "DISASSOC", 0x0C: "DEAUTH",
+                }
+                name = names.get(subtype, f"MGMT_{subtype:02x}")
+                if subtype in (0x08, 0x05):
+                    ssid = ap._extract_ssid(frame)
+                    print(f"  [{ts}] #{frame_count} {name} "
+                          f"{bssid.hex(':')} SSID='{ssid}'")
+                elif subtype == 0x04:
+                    ssid = ap._extract_ssid(frame)
+                    print(f"  [{ts}] #{frame_count} {name} "
+                          f"from {sa.hex(':')} SSID='{ssid}'")
+                else:
+                    print(f"  [{ts}] #{frame_count} {name} from {sa.hex(':')}")
+
+            elif ftype == 2:  # Data
+                ra, ta = frame[4:10], frame[10:16]
+                print(f"  [{ts}] #{frame_count} DATA "
+                      f"{ta.hex(':')} -> {ra.hex(':')} ({len(frame)} bytes)")
+
     except KeyboardInterrupt:
         pass
 
+    cap.close()
     print(f"\n  Stopped. Parsed: {frame_count}, Rejected: {reject_count}")
-    ap.deinit_monitor_rx()
 
 
 def _run_start_ap(ap, args, log):
     """Start a fake AP: RCR + beacon TX + auth/assoc response."""
-    import usb.core
     from .evil_twin.ap.frames import craft_beacon, craft_auth_response, craft_assoc_response
+    from .evil_twin.usb.capture import CaptureSession
 
     ap_mac = ap.read_efuse_mac() or b'\x02\x00\x00\x00\x00\x01'
     ssid = args.ssid
     channel = args.channel
 
-    ap.init_monitor_rx()
-    beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
+    cap = CaptureSession()
+    system = __import__("platform").system()
 
-    print(f"\n{'=' * 50}")
-    print(f"  Starting AP: SSID='{ssid}'")
-    print(f"  BSSID={ap_mac.hex(':')}  Channel={channel}")
-    print("  Listening for auth/assoc requests...")
-    print("  Press Ctrl+C to stop")
-    print(f"{'=' * 50}\n")
+    if system == "Darwin":
+        iface = args.iface or "en0"
+        cap.open(interface=iface, channel=channel)
+        ap.init_monitor_rx()
+        print(f"\n{'=' * 50}")
+        print(f"  Starting AP: SSID='{ssid}'")
+        print(f"  BSSID={ap_mac.hex(':')}  Channel={channel}")
+        print(f"  Capture: libpcap on {iface}")
+        print("  Listening for auth/assoc requests...")
+        print("  Press Ctrl+C to stop")
+        print(f"{'=' * 50}\n")
+    else:
+        cap.open(usb_dev=ap.dev, ep_rx=ap.ep_rx)
+        ap.init_monitor_rx()
+        print(f"\n{'=' * 50}")
+        print(f"  Starting AP: SSID='{ssid}'")
+        print(f"  BSSID={ap_mac.hex(':')}  Channel={channel}")
+        print("  Listening for auth/assoc requests...")
+        print("  Press Ctrl+C to stop")
+        print(f"{'=' * 50}\n")
+
+    beacon = craft_beacon(ap_mac, ssid, channel, seq=0)
 
     mgmt_seq = 1
     next_beacon = time.monotonic()
@@ -334,55 +348,48 @@ def _run_start_ap(ap, args, log):
                     pass
                 next_beacon = now + 0.1
 
-            try:
-                data = ap.dev.read(ap.ep_rx, 4096, timeout=10)
-                if not data:
-                    continue
-
-                frame = ap._try_parse_rx(bytes(data))
-                if frame is None or len(frame) < 24:
-                    continue
-
-                fc = struct.unpack('<H', frame[0:2])[0]
-                ftype = (fc >> 2) & 0x03
-                subtype = (fc >> 4) & 0x0F
-
-                if ftype != 0:
-                    continue
-
-                _da, sa, _bssid = frame[4:10], frame[10:16], frame[16:22]
-
-                if subtype == 0x0B:  # Auth Request
-                    print(f"  [AUTH REQ] from {sa.hex(':')}")
-                    resp = craft_auth_response(sa, ap_mac, mgmt_seq)
-                    mgmt_seq = (mgmt_seq + 1) & 0xFFF
-                    ap.dev.write(ap.ep_tx, resp, timeout=50)
-                    print(f"  [AUTH RESP] sent to {sa.hex(':')}")
-
-                elif subtype == 0x00:  # Assoc Request
-                    print(f"  [ASSOC REQ] from {sa.hex(':')}")
-                    resp = craft_assoc_response(sa, ap_mac, aid=1, seq=mgmt_seq)
-                    mgmt_seq = (mgmt_seq + 1) & 0xFFF
-                    ap.dev.write(ap.ep_tx, resp, timeout=50)
-                    print(f"  [ASSOC RESP] sent to {sa.hex(':')} (AID=1)")
-                    ap.station_assoc(sa)
-
-                elif subtype == 0x04:  # Probe Request
-                    probe_ssid = ap._extract_ssid(frame)
-                    if probe_ssid == ssid or probe_ssid == '':
-                        print(f"  [PROBE REQ] from {sa.hex(':')} "
-                              f"SSID='{probe_ssid}'")
-
-            except usb.core.USBError as e:
-                if e.errno == 19:
-                    print("\n  USB disconnected.")
-                    break
+            raw = cap.read_frame(timeout=0.01)
+            if raw is None:
                 continue
+
+            frame = ap._try_parse_rx(raw) if system != "Darwin" else raw
+            if frame is None or len(frame) < 24:
+                continue
+
+            fc = struct.unpack('<H', frame[0:2])[0]
+            ftype = (fc >> 2) & 0x03
+            subtype = (fc >> 4) & 0x0F
+
+            if ftype != 0:
+                continue
+
+            _da, sa, _bssid = frame[4:10], frame[10:16], frame[16:22]
+
+            if subtype == 0x0B:  # Auth Request
+                print(f"  [AUTH REQ] from {sa.hex(':')}")
+                resp = craft_auth_response(sa, ap_mac, mgmt_seq)
+                mgmt_seq = (mgmt_seq + 1) & 0xFFF
+                ap.dev.write(ap.ep_tx, resp, timeout=50)
+                print(f"  [AUTH RESP] sent to {sa.hex(':')}")
+
+            elif subtype == 0x00:  # Assoc Request
+                print(f"  [ASSOC REQ] from {sa.hex(':')}")
+                resp = craft_assoc_response(sa, ap_mac, aid=1, seq=mgmt_seq)
+                mgmt_seq = (mgmt_seq + 1) & 0xFFF
+                ap.dev.write(ap.ep_tx, resp, timeout=50)
+                print(f"  [ASSOC RESP] sent to {sa.hex(':')} (AID=1)")
+                ap.station_assoc(sa)
+
+            elif subtype == 0x04:  # Probe Request
+                probe_ssid = ap._extract_ssid(frame)
+                if probe_ssid == ssid or probe_ssid == '':
+                    print(f"  [PROBE REQ] from {sa.hex(':')} "
+                          f"SSID='{probe_ssid}'")
 
     except KeyboardInterrupt:
         print(f"\n\n  Stopped. Beacons sent: {beacon_count}")
 
-    ap.deinit_monitor_rx()
+    cap.close()
 
 
 if __name__ == "__main__":

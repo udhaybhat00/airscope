@@ -1,0 +1,166 @@
+"""Cross-platform 802.11 frame capture.
+
+On Linux: PyUSB bulk reads (kernel passes frames through).
+On macOS: libpcap via ctypes (kernel blocks USB RX, use system capture).
+On Windows: PyUSB bulk reads (with WinUSB driver).
+
+No new pip dependencies -- libpcap ships with macOS and Linux.
+"""
+
+import ctypes
+import ctypes.util
+import os
+import platform
+import struct
+import time
+import logging
+from typing import Optional
+
+log = logging.getLogger(__name__)
+
+try:
+    import usb.core
+except ImportError:
+    usb_core = None
+else:
+    usb_core = usb.core
+
+
+class CaptureSession:
+    """Platform-abstracted 802.11 frame capture."""
+
+    def __init__(self):
+        self._backend = None
+        self._pcap = None
+        self._pcap_handle = None
+        self._usb_dev = None
+        self._ep_rx = 0x81
+
+    def open(self, interface: str = None, channel: int = 6,
+             usb_dev=None, ep_rx: int = 0x81):
+        system = platform.system()
+
+        if system == "Darwin":
+            self._backend = "pcap"
+            self._open_pcap(interface or self._find_mon_iface(), channel)
+        else:
+            self._backend = "usb"
+            self._usb_dev = usb_dev
+            self._ep_rx = ep_rx
+
+        log.info("Capture backend: %s (iface=%s)", self._backend, interface)
+
+    def read_frame(self, timeout: float = 1.0) -> Optional[bytes]:
+        if self._backend == "pcap":
+            return self._read_pcap(timeout)
+        return self._read_usb(timeout)
+
+    def close(self):
+        if self._backend == "pcap" and self._pcap_handle and self._pcap:
+            try:
+                self._pcap.pcap_close(self._pcap_handle)
+            except Exception:
+                pass
+            self._pcap_handle = None
+
+    def _find_mon_iface(self) -> str:
+        import subprocess
+        try:
+            airport = (
+                "/System/Library/PrivateFrameworks/Apple80211.framework"
+                "/Versions/Current/Resources/airport"
+            )
+            out = subprocess.check_output(
+                [airport, "-I"], text=True, timeout=5
+            )
+            for line in out.splitlines():
+                if "interface" in line.lower():
+                    return line.split(":")[-1].strip()
+        except Exception:
+            pass
+        return "en0"
+
+    def _open_pcap(self, iface: str, channel: int):
+        import subprocess
+        airport = (
+            "/System/Library/PrivateFrameworks/Apple80211.framework"
+            "/Versions/Current/Resources/airport"
+        )
+        try:
+            subprocess.run([airport, "-c", str(channel)],
+                           capture_output=True, timeout=5)
+            time.sleep(0.5)
+        except Exception as e:
+            log.warning("airport channel set failed: %s", e)
+
+        lib_path = ctypes.util.find_library("pcap")
+        if not lib_path:
+            for p in ["/usr/lib/libpcap.dylib",
+                       "/usr/local/lib/libpcap.dylib",
+                       "/opt/homebrew/lib/libpcap.dylib"]:
+                if os.path.exists(p):
+                    lib_path = p
+                    break
+
+        if not lib_path:
+            log.error("libpcap not found, falling back to USB")
+            self._backend = "usb"
+            return
+
+        try:
+            pcap = ctypes.CDLL(lib_path)
+            errbuf = ctypes.create_string_buffer(256)
+            handle = pcap.pcap_open_live(
+                iface.encode(), 65535, 1, 100, errbuf
+            )
+            if not handle:
+                raise RuntimeError(
+                    f"pcap_open_live failed: {errbuf.value.decode()}"
+                )
+            pcap.pcap_setdirection(handle, 1)
+            self._pcap = pcap
+            self._pcap_handle = handle
+            log.info("pcap opened on %s", iface)
+        except Exception as e:
+            log.error("pcap open failed: %s", e)
+            self._backend = "usb"
+
+    def _read_pcap(self, timeout: float) -> Optional[bytes]:
+        try:
+            pcap = self._pcap
+            handle = self._pcap_handle
+
+            header_ptr = ctypes.c_void_p()
+            data_ptr = ctypes.c_void_p()
+
+            ret = pcap.pcap_next_ex(
+                handle,
+                ctypes.byref(header_ptr),
+                ctypes.byref(data_ptr),
+            )
+
+            if ret == 1 and header_ptr and data_ptr:
+                hdr_bytes = ctypes.string_at(header_ptr, 16)
+                caplen = int.from_bytes(hdr_bytes[8:12], "little")
+                if caplen > 0 and caplen < 65535:
+                    pkt = ctypes.string_at(data_ptr, caplen)
+                    if len(pkt) >= 2:
+                        fc = struct.unpack("<H", pkt[0:2])[0]
+                        ftype = (fc >> 2) & 0x03
+                        if ftype in (0, 1, 2):
+                            return pkt
+        except Exception as e:
+            log.debug("pcap read error: %s", e)
+        return None
+
+    def _read_usb(self, timeout: float) -> Optional[bytes]:
+        if not self._usb_dev:
+            return None
+        try:
+            ms = int(timeout * 1000)
+            data = self._usb_dev.read(self._ep_rx, 4096, timeout=ms)
+            if data:
+                return bytes(data)
+        except Exception:
+            pass
+        return None
