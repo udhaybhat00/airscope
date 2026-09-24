@@ -30,6 +30,7 @@ class APStateMachine:
         self.usb_tx = usb_tx
 
         self._clients: dict[bytes, ClientState] = {}
+        self._tcp_conns: dict = {}
         self._next_aid = 1
         self._mgmt_seq = 1
         self._lock = threading.Lock()
@@ -132,7 +133,7 @@ class APStateMachine:
             handle_tcp(ip_packet, victim_mac, self._send_to_client, self._tcp_conns)
 
     def _send_to_client(self, victim_mac: bytes, ip_packet: bytes):
-        from .frames import wrap_in_80211_data
+        from .frames import wrap_ip_in_data
 
         with self._lock:
             client = self._clients.get(victim_mac)
@@ -141,7 +142,5 @@ class APStateMachine:
             seq = client.seq_to_client
             client.seq_to_client = (client.seq_to_client + 1) & 0xFFF
 
-        frame = wrap_in_80211_data(victim_mac, self.ap_mac, ip_packet, seq)
+        frame = wrap_ip_in_data(victim_mac, self.ap_mac, ip_packet, seq)
         self.usb_tx(frame, priority=1)
-
-    _tcp_conns: dict = field(default_factory=dict)

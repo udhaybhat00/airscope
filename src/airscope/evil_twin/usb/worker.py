@@ -53,12 +53,20 @@ class ApWorker:
     _beacon_task: Optional[asyncio.Task] = field(default=None, repr=False)
     _cleanup_task: Optional[asyncio.Task] = field(default=None, repr=False)
     _seq: int = field(default=0, repr=False)
+    _ap_sm: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
         self._log = self.log_fn or (lambda m: log.info(m))
 
     async def start(self) -> None:
         self._running = True
+        from ..ap.ap_core import APStateMachine
+        bssid_bytes = bytes(int(o, 16) for o in self.bssid.split(":"))
+
+        def _usb_tx(frame: bytes, priority: int = 0) -> None:
+            asyncio.ensure_future(self.driver.inject_frame(frame))
+
+        self._ap_sm = APStateMachine(bssid_bytes, self.ssid, self.channel, _usb_tx)
         self.iface.register_rx_callback(self._on_rx)
         self._beacon_task = asyncio.create_task(self._beacon_loop())
         self._cleanup_task = asyncio.create_task(self._cleanup_loop())
@@ -80,26 +88,12 @@ class ApWorker:
         raw = pkt.raw
         if len(raw) < 12:
             return
+        if self._ap_sm is None:
+            return
         try:
-            from .ap.frames import parse_fc, FC_TYPE_MGMT, strip_80211_data
-
-            fc_type, subtype, to_ds, from_ds = parse_fc(raw)
-            if fc_type == FC_TYPE_MGMT:
-                self._handle_mgmt(raw, subtype)
-            elif not to_ds and not from_ds:
-                pass
-            else:
-                victim_mac, ip_packet = strip_80211_data(raw)
-                if victim_mac is not None and ip_packet is not None:
-                    self._handle_data(victim_mac, ip_packet)
+            self._ap_sm.handle_rx(raw)
         except Exception:
             log.debug("RX dispatch error", exc_info=True)
-
-    def _handle_mgmt(self, raw: bytes, subtype: int) -> None:
-        pass
-
-    def _handle_data(self, victim_mac: bytes, ip_packet: bytes) -> None:
-        pass
 
     async def _beacon_loop(self) -> None:
         from .ap.frames import craft_beacon
