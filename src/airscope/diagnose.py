@@ -237,7 +237,12 @@ def _run_sniff(ap, args, log):
     if system == "Darwin":
         iface = args.iface or "en0"
         cap.open(interface=iface, channel=6)
-        print(f"  Using libpcap on {iface} (macOS capture backend)")
+        if cap._backend == "pcap":
+            print(f"  Using libpcap on {iface} (macOS capture backend)")
+        else:
+            print("  WARNING: libpcap failed. Run with sudo, or fix BPF permissions:")
+            print(f"    sudo uv run python -m airscope.diagnose --sniff --iface {iface}")
+            print("    OR: sudo chgrp wheel /dev/bpf* && sudo chmod g+r /dev/bpf*")
     else:
         cap.open(usb_dev=ap.dev, ep_rx=ap.ep_rx)
         ap.init_monitor_rx()

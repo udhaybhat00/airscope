@@ -63,15 +63,23 @@ class CaptureSession:
                 pass
             self._pcap_handle = None
 
+    def _find_airport(self) -> str:
+        candidates = [
+            "/System/Library/PrivateFrameworks/Apple80211.framework"
+            "/Versions/Current/Resources/airport",
+            "/usr/libexec/airport",
+        ]
+        for path in candidates:
+            if os.path.exists(path):
+                return path
+        import shutil
+        return shutil.which("airport") or "airport"
+
     def _find_mon_iface(self) -> str:
         import subprocess
         try:
-            airport = (
-                "/System/Library/PrivateFrameworks/Apple80211.framework"
-                "/Versions/Current/Resources/airport"
-            )
             out = subprocess.check_output(
-                [airport, "-I"], text=True, timeout=5
+                [self._find_airport(), "-I"], text=True, timeout=5
             )
             for line in out.splitlines():
                 if "interface" in line.lower():
@@ -82,13 +90,12 @@ class CaptureSession:
 
     def _open_pcap(self, iface: str, channel: int):
         import subprocess
-        airport = (
-            "/System/Library/PrivateFrameworks/Apple80211.framework"
-            "/Versions/Current/Resources/airport"
-        )
+        airport = self._find_airport()
         try:
-            subprocess.run([airport, "-c", str(channel)],
-                           capture_output=True, timeout=5)
+            subprocess.run(
+                ["sudo", airport, "-c", str(channel)],
+                capture_output=True, timeout=5
+            )
             time.sleep(0.5)
         except Exception as e:
             log.warning("airport channel set failed: %s", e)
@@ -107,23 +114,28 @@ class CaptureSession:
             self._backend = "usb"
             return
 
-        try:
-            pcap = ctypes.CDLL(lib_path)
-            errbuf = ctypes.create_string_buffer(256)
-            handle = pcap.pcap_open_live(
-                iface.encode(), 65535, 1, 100, errbuf
-            )
-            if not handle:
-                raise RuntimeError(
-                    f"pcap_open_live failed: {errbuf.value.decode()}"
+        pcap = ctypes.CDLL(lib_path)
+        errbuf = ctypes.create_string_buffer(256)
+        handle = pcap.pcap_open_live(
+            iface.encode(), 65535, 1, 100, errbuf
+        )
+        if not handle:
+            err = errbuf.value.decode()
+            if "Permission denied" in err or "cannot open BPF" in err:
+                log.error(
+                    "BPF permission denied. Run with sudo, or fix with:\n"
+                    "  sudo chgrp wheel /dev/bpf*\n"
+                    "  sudo chmod g+r /dev/bpf*"
                 )
-            pcap.pcap_setdirection(handle, 1)
-            self._pcap = pcap
-            self._pcap_handle = handle
-            log.info("pcap opened on %s", iface)
-        except Exception as e:
-            log.error("pcap open failed: %s", e)
+            else:
+                log.error("pcap_open_live: %s", err)
             self._backend = "usb"
+            return
+
+        pcap.pcap_setdirection(handle, 1)
+        self._pcap = pcap
+        self._pcap_handle = handle
+        log.info("pcap opened on %s", iface)
 
     def _read_pcap(self, timeout: float) -> Optional[bytes]:
         try:
