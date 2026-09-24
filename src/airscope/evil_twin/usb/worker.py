@@ -29,8 +29,6 @@ class TxFrame:
 # ApWorker - campaign-compatible wrapper (uses airscope driver/iface)
 # ---------------------------------------------------------------------------
 
-_BEACON_INTERVAL_MS = 100
-
 
 @dataclass
 class ApWorker:
@@ -50,9 +48,6 @@ class ApWorker:
     log_fn: Optional[Callable[[str], None]] = None
 
     _running: bool = field(default=False, repr=False)
-    _beacon_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    _cleanup_task: Optional[asyncio.Task] = field(default=None, repr=False)
-    _seq: int = field(default=0, repr=False)
     _ap_sm: object = field(default=None, repr=False)
 
     def __post_init__(self) -> None:
@@ -68,16 +63,10 @@ class ApWorker:
 
         self._ap_sm = APStateMachine(bssid_bytes, self.ssid, self.channel, _usb_tx)
         self.iface.register_rx_callback(self._on_rx)
-        self._beacon_task = asyncio.create_task(self._beacon_loop())
-        self._cleanup_task = asyncio.create_task(self._cleanup_loop())
         self._log(f"[ap-worker] {self.ssid} started on ch {self.channel}")
 
     async def stop(self) -> None:
         self._running = False
-        if self._beacon_task:
-            self._beacon_task.cancel()
-        if self._cleanup_task:
-            self._cleanup_task.cancel()
         try:
             self.iface.unregister_rx_callback(self._on_rx)
         except Exception:
@@ -94,22 +83,6 @@ class ApWorker:
             self._ap_sm.handle_rx(raw)
         except Exception:
             log.debug("RX dispatch error", exc_info=True)
-
-    async def _beacon_loop(self) -> None:
-        from .ap.frames import craft_beacon
-        bssid_bytes = bytes(int(o, 16) for o in self.bssid.split(":"))
-        while self._running:
-            self._seq = (self._seq + 1) & 0xFFF
-            beacon = craft_beacon(bssid_bytes, self.ssid, self.channel, self._seq)
-            try:
-                await self.driver.inject_frame(beacon)
-            except Exception:
-                log.debug("beacon inject failed", exc_info=True)
-            await asyncio.sleep(_BEACON_INTERVAL_MS / 1000.0)
-
-    async def _cleanup_loop(self) -> None:
-        while self._running:
-            await asyncio.sleep(10.0)
 
 
 # ---------------------------------------------------------------------------

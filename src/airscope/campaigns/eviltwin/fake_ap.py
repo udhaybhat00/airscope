@@ -53,7 +53,7 @@ class FakeApStats:
 class FakeAP:
     def __init__(self, twin_iface, bssid: bytes, ssid: str, channel: int, twin_beacon: bytes,
                  rx_source=None, record_m1: Optional[Callable[[bytes], None]] = None,
-                 open_mode: bool = False):
+                 open_mode: bool = False, external_auth: bool = False):
         self.iface = twin_iface
         self.bssid = bssid
         self.ssid = ssid
@@ -61,6 +61,7 @@ class FakeAP:
         self.twin_beacon = twin_beacon
         self.rx_source = rx_source
         self.open_mode = open_mode
+        self.external_auth = external_auth
         self.record_m1 = record_m1 or (lambda _frame: None)
         self.stats = FakeApStats()
         self._probe_resp = probe_resp(bssid, ssid, channel)
@@ -115,6 +116,8 @@ class FakeAP:
             self._on_probe(pkt, client)
         elif raw[4:10] != self.bssid:                   # auth/assoc must be addressed to us
             return
+        elif self.external_auth:
+            return                                      # ApWorker handles auth/assoc
         elif subtype == 0x0B:                           # authentication
             self._on_auth(client)
         elif subtype in (0x00, 0x02):                   # (re)association request

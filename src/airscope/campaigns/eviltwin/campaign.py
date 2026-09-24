@@ -204,11 +204,18 @@ class EvilTwinCampaign(Campaign):
         # Find the corresponding .hc22000 file
         hc22000_path = path.with_suffix(".hc22000")
         if not hc22000_path.exists():
-            # Try the pcap directory's aggregate file
             hc22000_path = Path(Config.captures_dir) / f"{path.stem}.hc22000"
-            if not hc22000_path.exists():
-                self.log(f"[bold red]no .hc22000 file found for {path}[/bold red]")
-                return False
+        if not hc22000_path.exists():
+            bssid_clean = self.ap.bssid.replace(":", "").replace("-", "").lower()
+            for p in Path(Config.captures_dir).iterdir():
+                if p.suffix == ".hc22000" and p.is_file():
+                    stem_clean = p.stem.replace("-", "").replace("_", "").lower()
+                    if bssid_clean in stem_clean:
+                        hc22000_path = p
+                        break
+        if not hc22000_path.exists():
+            self.log(f"[bold red]no .hc22000 file found for {path}[/bold red]")
+            return False
 
         try:
             loaded = 0
@@ -353,7 +360,8 @@ class EvilTwinCampaign(Campaign):
         self.fakeap = FakeAP(self.twin_iface, str_to_mac(self.twin_bssid), self.ssid,
                              self.twin_channel, self.twin_beacon, rx_source=self.twin_iface,
                              record_m1=self.array.record_injected_eapol,
-                             open_mode=self.use_captive_portal)
+                             open_mode=self.use_captive_portal,
+                             external_auth=self.use_captive_portal)
         await self.fakeap.start()
         if self.use_captive_portal:
             self.log(f"[2/3] twin live on ch {self.twin_channel} (OPEN, {self.ssid!r}); "
