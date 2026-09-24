@@ -68,37 +68,64 @@ class CaptureSession:
             "/System/Library/PrivateFrameworks/Apple80211.framework"
             "/Versions/Current/Resources/airport",
             "/usr/libexec/airport",
+            "/System/Library/PrivateFrameworks/Apple80211.framework"
+            "/Versions/A/Resources/airport",
         ]
         for path in candidates:
             if os.path.exists(path):
                 return path
         import shutil
-        return shutil.which("airport") or "airport"
+        return shutil.which("airport") or ""
 
     def _find_mon_iface(self) -> str:
         import subprocess
+        import re
+
         try:
             out = subprocess.check_output(
-                [self._find_airport(), "-I"], text=True, timeout=5
+                ["networksetup", "-listallhardwareports"],
+                text=True, timeout=5
             )
-            for line in out.splitlines():
-                if "interface" in line.lower():
-                    return line.split(":")[-1].strip()
+            usb_iface = None
+            for block in out.split("Hardware Port:"):
+                if "USB" in block.upper() or "REALTEK" in block.upper():
+                    m = re.search(r"Device:\s*(en\d+)", block)
+                    if m:
+                        usb_iface = m.group(1)
+                        break
+            if usb_iface:
+                return usb_iface
         except Exception:
             pass
+
+        try:
+            out = subprocess.check_output(
+                ["ifconfig"], text=True, timeout=5
+            )
+            for line in out.split("\n"):
+                if line.startswith("en") and "inet " not in line:
+                    m = re.match(r"(en\d+):", line)
+                    if m:
+                        iface = m.group(1)
+                        if iface != "en0":
+                            return iface
+        except Exception:
+            pass
+
         return "en0"
 
     def _open_pcap(self, iface: str, channel: int):
         import subprocess
         airport = self._find_airport()
-        try:
-            subprocess.run(
-                ["sudo", airport, "-c", str(channel)],
-                capture_output=True, timeout=5
-            )
-            time.sleep(0.5)
-        except Exception as e:
-            log.warning("airport channel set failed: %s", e)
+        if airport:
+            try:
+                subprocess.run(
+                    ["sudo", airport, "-c", str(channel)],
+                    capture_output=True, timeout=5
+                )
+                time.sleep(0.5)
+            except Exception as e:
+                log.warning("airport channel set failed: %s", e)
 
         lib_path = ctypes.util.find_library("pcap")
         if not lib_path:
