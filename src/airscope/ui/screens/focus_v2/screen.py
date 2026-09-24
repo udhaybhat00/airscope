@@ -1019,7 +1019,7 @@ class FocusViewV2(Screen):
         if not ap or not array:
             return
         from airscope.persist.save import find_existing_handshake
-        existing = find_existing_handshake(evil_input.twin_bssid)
+        existing = find_existing_handshake(ap.bssid)
         if existing is not None:
             self._pending_evil_input = evil_input
             self.app.push_screen(

@@ -168,6 +168,24 @@ class EvilTwinCampaign(Campaign):
         self._candidates = _CandidateFeed(iter_candidates(wordlist, seeds))
         return self._candidates
 
+    @staticmethod
+    def _classify_eapol_msg_num(eapol_bytes: bytes) -> int:
+        if len(eapol_bytes) < 99:
+            return 0
+        key_info = int.from_bytes(eapol_bytes[5:7], "little")
+        ack = bool(key_info & (1 << 3))
+        mic = bool(key_info & (1 << 6))
+        install = bool(key_info & (1 << 7))
+        if not ack and mic:
+            return 2
+        if ack and not mic:
+            return 1
+        if ack and mic and not install:
+            return 3
+        if ack and mic and install:
+            return 4
+        return 0
+
     def _load_existing_handshake(self) -> bool:
         """Load handshake from existing_handshake_path into self.ap.handshakes.
 
@@ -193,18 +211,16 @@ class EvilTwinCampaign(Campaign):
                 return False
 
         try:
-            # Parse hc22000 file and reconstruct Handshake objects
             loaded = 0
             for line in hc22000_path.read_text().splitlines():
                 entry = parse_hc22000(line)
                 if not entry:
                     continue
-                if entry.kind != "02":  # Only 4-way handshakes (WPA*02)
+                if entry.kind != "02":
                     continue
                 if entry.mac_ap != self.ap.bssid.lower():
                     continue
 
-                # Get or create Handshake for this client
                 hs = self.ap.handshakes.get(entry.mac_sta)
                 if hs is None:
                     hs = Handshake(
@@ -215,17 +231,9 @@ class EvilTwinCampaign(Campaign):
                     )
                     self.ap.handshakes[entry.mac_sta] = hs
 
-                # Reconstruct HandshakeMessage from hc22000 fields
-                # The eapol field contains the raw EAPOL frame bytes (hex)
                 if entry.eapol:
                     eapol_bytes = bytes.fromhex(entry.eapol)
-                    # Determine msg_num from message_pair
-                    msg_pair = int(entry.message_pair) if entry.message_pair else 0
-                    msg_num = 0
-                    if msg_pair in (0x00, 0x02):  # M1+M2 or M2+M3, EAPOL from M2
-                        msg_num = 2
-                    elif msg_pair in (0x05, 0x01):  # M3+M4 or M1+M4, EAPOL from M4
-                        msg_num = 4
+                    msg_num = self._classify_eapol_msg_num(eapol_bytes)
 
                     hs_msg = HandshakeMessage(
                         raw=eapol_bytes,
@@ -285,6 +293,11 @@ class EvilTwinCampaign(Campaign):
     async def _capture_reference(self) -> bool:
         """Deauth until the always-on capture holds a crackable M1+M2 on the real AP."""
         self.log("[1/3] capturing a real handshake first (deauth clients + broadcast)")
+        try:
+            if self.punt_iface.current_channel != self.ap.channel:
+                await self.punt_iface.set_channel(self.ap.channel)
+        except Exception:
+            pass
         deadline = time.monotonic() + _REFERENCE_TIMEOUT_SEC
         deauths_sent = 0
         last_progress = time.monotonic()
