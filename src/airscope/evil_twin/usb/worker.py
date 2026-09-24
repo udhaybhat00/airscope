@@ -1,17 +1,18 @@
 """USB worker thread: all blocking PyUSB I/O happens here.
-Cross-platform: works on macOS (IOKit), Windows (WinUSB), Linux (libusb).
+Cross-platform: works on macOS (libpcap RX), Windows (WinUSB), Linux (libusb).
 
 Also provides ApWorker - a high-level wrapper for the campaign flow that
 uses the existing airscope driver (async inject_frame / register_rx_callback).
 """
 
 import asyncio
+import logging
+import queue
+import sys
 import threading
 import time
-import queue
-import logging
 from dataclasses import dataclass, field
-from typing import Optional, Callable
+from typing import Callable, Optional
 
 
 log = logging.getLogger(__name__)
@@ -205,24 +206,50 @@ class UsbWorker:
         next_deauth = time.monotonic()
         deauth_idx = 0
 
+        cap_session = None
+        use_pcap = sys.platform == "darwin"
+        if use_pcap:
+            try:
+                from .capture import CaptureSession
+                cap_session = CaptureSession()
+                cap_session.open(channel=6)
+                if cap_session._backend != "pcap":
+                    cap_session = None
+                    use_pcap = False
+                else:
+                    log.info("UsbWorker: using libpcap for RX on macOS")
+            except Exception as e:
+                log.warning("UsbWorker: pcap init failed: %s", e)
+                cap_session = None
+                use_pcap = False
+
         while self._running:
             now = time.monotonic()
 
-            try:
-                data = self._dev.read(self._ep_rx, 4096, timeout=5)
-                if data:
-                    self._rx_count += 1
-                    raw = bytes(data)
-                    if self._rtl_ap:
-                        frame = self._rtl_ap._try_parse_rx(raw)
-                        if frame is not None:
-                            self._ap.handle_rx(frame)
-                    else:
+            if use_pcap and cap_session:
+                try:
+                    raw = cap_session.read_frame(timeout=0.005)
+                    if raw:
+                        self._rx_count += 1
                         self._ap.handle_rx(raw)
-            except Exception as e:
-                if self._is_disconnect_error(e):
-                    self._handle_disconnect(str(e))
-                    return
+                except Exception:
+                    pass
+            else:
+                try:
+                    data = self._dev.read(self._ep_rx, 4096, timeout=5)
+                    if data:
+                        self._rx_count += 1
+                        raw = bytes(data)
+                        if self._rtl_ap:
+                            frame = self._rtl_ap._try_parse_rx(raw)
+                            if frame is not None:
+                                self._ap.handle_rx(frame)
+                        else:
+                            self._ap.handle_rx(raw)
+                except Exception as e:
+                    if self._is_disconnect_error(e):
+                        self._handle_disconnect(str(e))
+                        return
 
             self._drain_pending_tx()
 
@@ -260,6 +287,12 @@ class UsbWorker:
                     pass
 
             time.sleep(0.001)
+
+        if cap_session:
+            try:
+                cap_session.close()
+            except Exception:
+                pass
 
     def _drain_pending_tx(self):
         while not self._tx_queue.empty():
