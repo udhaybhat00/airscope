@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import enum
+import logging
 import os
 import struct
 import time
@@ -19,6 +20,8 @@ from typing import Callable, Dict, Optional
 from airscope.dot11.ap import auth_resp, assoc_resp, eapol_m1, eapol_m3
 from airscope.dot11.mac import mac_to_str
 from airscope.dot11.probe import probe_resp
+
+log = logging.getLogger(__name__)
 
 _BEACON_PERIOD_S = 100 * 1024 / 1_000_000       # 100 TU
 
@@ -91,8 +94,20 @@ class FakeAP:
             pass
 
     async def _beacon_loop(self) -> None:
+        consecutive_errors = 0
         while self._running:
-            await self.iface.send_no_wait(self._restamp(self.twin_beacon))
+            try:
+                await self.iface.send_no_wait(self._restamp(self.twin_beacon))
+                consecutive_errors = 0
+            except Exception:
+                consecutive_errors += 1
+                log.warning("[fakeap] beacon inject failed (%d consecutive)", consecutive_errors,
+                            exc_info=True)
+                if consecutive_errors >= 5:
+                    log.error("[fakeap] beacon loop giving up after %d failures", consecutive_errors)
+                    break
+                await asyncio.sleep(min(consecutive_errors * 0.5, 5.0))
+                continue
             await asyncio.sleep(_BEACON_PERIOD_S)
 
     @staticmethod

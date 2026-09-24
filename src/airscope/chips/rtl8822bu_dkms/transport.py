@@ -92,7 +92,13 @@ class Rtl8822buTransport:
 
     # --- bulk OUT (FW/TX) / bulk IN (RX) -------------------------------------
     def bulk_out(self, data: bytes) -> None:
-        self.dev.write(self._bulk_out_ep, data, _BULK_TIMEOUT_MS)
+        try:
+            self.dev.write(self._bulk_out_ep, data, _BULK_TIMEOUT_MS)
+        except usb.core.USBError as exc:
+            import logging as _log
+            _log.getLogger(__name__).warning("bulk-OUT EP 0x%02x failed (%d bytes): %s",
+                                             self._bulk_out_ep, len(data), exc)
+            raise
 
     def _bulk_in_ep(self) -> int:
         if self._in_ep is not None:

@@ -414,13 +414,15 @@ class Rtl8822buDkmsDriver(Driver):
 
     async def _inject_frame(self, frame_bytes: bytes) -> bool:
         """Build the fill_fake_txdesc descriptor (`tx.build_inject_txdesc`, HW ACK-retry limit
-        12) and bulk-OUT the frame once. Live TX is the user's explicit
-        action — the agent never calls this; the descriptor build is unit-tested in test_tx.py (no
-        TX in the passive capture to pcap-diff)."""
+        12) and bulk-OUT the frame once."""
         payload = tx.build_inject_txdesc(bytes(frame_bytes))
         loop = asyncio.get_running_loop()
-        async with self._io_lock:
-            await loop.run_in_executor(None, self.transport.bulk_out, payload)
+        try:
+            async with self._io_lock:
+                await loop.run_in_executor(None, self.transport.bulk_out, payload)
+        except Exception as exc:
+            logger.warning("[inject] bulk-OUT failed: %s", exc)
+            return False
         return True
 
     def _stamp_tx_seq(self, frame_bytes: bytes) -> bytes:
