@@ -164,7 +164,7 @@ class Rtl8822buDkmsDriver(Driver):
         self._dbg_frames = 0
         self._dbg_beacons = 0
         self._dbg_rx = _RxDebugStats()
-        self._inject_diag_done = False
+        self._inject_count = 0
 
     @classmethod
     def from_usb_device(cls, dev: usb.core.Device, id_entry: DeviceID) -> "Rtl8822buDkmsDriver":
@@ -428,27 +428,23 @@ class Rtl8822buDkmsDriver(Driver):
         loop = asyncio.get_running_loop()
         try:
             async with self._io_lock:
+                await loop.run_in_executor(None, self.transport.write8, 0x0522, 0x00)
                 await loop.run_in_executor(None, self.transport.bulk_out, payload)
         except Exception as exc:
             logger.warning("[inject] bulk-OUT failed: %s", exc)
             return False
-        if logger.isEnabledFor(logging.DEBUG) and not self._inject_diag_done:
-            self._inject_diag_done = True
+        self._inject_count += 1
+        if logger.isEnabledFor(logging.DEBUG) and self._inject_count <= 3:
             try:
                 async with self._io_lock:
                     cr = await loop.run_in_executor(None, self.transport.read8, 0x0100)
                     txpause = await loop.run_in_executor(None, self.transport.read8, 0x0522)
                     pqmap = await loop.run_in_executor(None, self.transport.read16, 0x010C)
                     bcn_ctrl = await loop.run_in_executor(None, self.transport.read8, 0x0550)
-                logger.debug("[TXDIAG] CR=0x%02x TXPAUSE=0x%02x PQMAP=0x%04x BCN_CTRL=0x%02x"
-                             " | CR.TXDMA=%d CR.HCI_TXDMA=%d",
-                             cr, txpause, pqmap, bcn_ctrl,
-                             bool(cr & 0x04), bool(cr & 0x01))
-                if txpause:
-                    logger.warning("[TXDIAG] TXPAUSE=0x%02x — TX is PAUSED! "
-                                   "clearing TXPAUSE", txpause)
-                    async with self._io_lock:
-                        await loop.run_in_executor(None, self.transport.write16, 0x0522, 0x0000)
+                logger.debug("[TXDIAG #%d] CR=0x%02x TXPAUSE=0x%02x PQMAP=0x%04x BCN_CTRL=0x%02x"
+                             " | CR.TXDMA=%d CR.HCI_TXDMA=%d payload=%dB",
+                             self._inject_count, cr, txpause, pqmap, bcn_ctrl,
+                             bool(cr & 0x04), bool(cr & 0x01), len(payload))
             except Exception as exc:
                 logger.debug("[TXDIAG] register read failed: %s", exc)
         return True

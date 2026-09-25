@@ -96,24 +96,35 @@ class FakeAP:
     async def _beacon_loop(self) -> None:
         consecutive_errors = 0
         first_beacon = True
+        sent = 0
+        failed = 0
         while self._running:
             try:
                 frame = self._restamp(self.twin_beacon)
                 if first_beacon:
                     first_beacon = False
                     self._log_first_beacon(frame)
-                await self.iface.send_no_wait(frame)
-                consecutive_errors = 0
+                ok = await self.iface.send_no_wait(frame)
+                if ok:
+                    sent += 1
+                    consecutive_errors = 0
+                else:
+                    failed += 1
+                    consecutive_errors += 1
+                    log.warning("[fakeap] beacon inject returned False (%d/%d ok/fail)",
+                                sent, failed)
             except Exception:
                 consecutive_errors += 1
+                failed += 1
                 log.warning("[fakeap] beacon inject failed (%d consecutive)", consecutive_errors,
                             exc_info=True)
-                if consecutive_errors >= 5:
-                    log.error("[fakeap] beacon loop giving up after %d failures", consecutive_errors)
-                    break
+            if consecutive_errors >= 5:
+                log.error("[fakeap] beacon loop giving up after %d failures", consecutive_errors)
+                break
+            if consecutive_errors > 1:
                 await asyncio.sleep(min(consecutive_errors * 0.5, 5.0))
-                continue
-            await asyncio.sleep(_BEACON_PERIOD_S)
+            else:
+                await asyncio.sleep(_BEACON_PERIOD_S)
 
     def _log_first_beacon(self, frame: bytes) -> None:
         """Log the first beacon's DS Parameter Set (channel IE) for TX diagnostic."""
