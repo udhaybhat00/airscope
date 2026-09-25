@@ -116,6 +116,13 @@ class Driver(ABC):
 
     # ---- TX ---------------------------------------------------------------
 
+    async def check_tx_capability(self) -> tuple[bool, str]:
+        """Prove TX actually works before an attack starts. Returns (ok, message).
+        A default True stub keeps existing drivers working; drivers that can
+        verify TX (e.g. RTL8822BU DKMS reading back TXPAUSE/DMA registers)
+        override this to catch platform-specific bulk-OUT failures early."""
+        return True, "TX check not implemented; proceeding optimistically"
+
     async def inject_frame(self, frame_bytes: bytes) -> bool:
         """Transmit one raw 802.11 frame, fire-and-forget. The chip's own HW ACK-based retry
         (the driver's per-chip retry limit) is the only retransmission. When the ACK tally is

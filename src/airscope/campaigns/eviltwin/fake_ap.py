@@ -77,6 +77,10 @@ class FakeAP:
         self._running = True
         if self.iface.current_channel != self.channel:
             await self.iface.set_channel(self.channel)
+        # Verify the channel actually landed where we need it.
+        actual = getattr(self.iface, "current_channel", None)
+        if actual is not None and actual != self.channel:
+            log.warning("[fakeap] channel mismatch: requested %d but card is on %d", self.channel, actual)
         await self.iface.set_fake_mac(self.bssid, self.bssid)
         if self.rx_source is not None:
             self.rx_source.register_rx_callback(self.on_rx)

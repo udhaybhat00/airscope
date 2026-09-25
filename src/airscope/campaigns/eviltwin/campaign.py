@@ -140,6 +140,9 @@ class EvilTwinCampaign(Campaign):
 
     # ----- helpers ------------------------------------------------------------
 
+    def _fail_tx(self, detail: str, adapter: str = "twin adapter") -> None:
+        self.log(f"[bold red]TX capability check failed ({adapter}):[/bold red] {detail}")
+
     def _target_clients(self) -> list:
         if not self.array.clients:
             return []
@@ -467,6 +470,17 @@ class EvilTwinCampaign(Campaign):
         else:
             if not await self._capture_reference():
                 return
+        tx_ok, tx_msg = await self.twin_iface.driver.check_tx_capability()
+        if not tx_ok:
+            self._fail_tx(tx_msg)
+            return
+        self.log(f"[dim]TX check: {tx_msg}[/dim]")
+        if self.punt_iface is not self.twin_iface:
+            px_ok, px_msg = await self.punt_iface.driver.check_tx_capability()
+            if not px_ok:
+                self._fail_tx(px_msg, adapter="deauth adapter")
+                return
+            self.log(f"[dim]Punter TX check: {px_msg}[/dim]")
         if self.use_captive_portal:
             await self._step2_run_twin()
             await self._step3_captive_portal()

@@ -40,6 +40,11 @@ _BEACON = (b"\x80\x00\x00\x00" + _BROADCAST + _BSSID_B + _BSSID_B + b"\x00\x00"
 _TWIN_BEACON = _BEACON[:10] + _TWIN_B + _TWIN_B + _BEACON[22:]
 
 
+class _FakeDriver:
+    async def check_tx_capability(self) -> tuple[bool, str]:
+        return True, "TX OK (mock)"
+
+
 class _FakeIface:
     def __init__(self):
         self.sent: list[bytes] = []
@@ -48,6 +53,7 @@ class _FakeIface:
         self.fake_mac_clears = 0
         self.deauths: list[tuple] = []
         self.broadcasts = 0
+        self.driver = _FakeDriver()
 
     async def send_no_wait(self, frame: bytes) -> bool:
         self.sent.append(bytes(frame))

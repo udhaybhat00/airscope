@@ -1,4 +1,5 @@
 """Entry point for ``python -m airscope`` and the ``airscope`` console script."""
+import os
 
 
 async def _smoke() -> None:
@@ -222,8 +223,76 @@ def _web(args) -> int:
     return 0
 
 
+def _maybe_reexec_in_vm() -> None:
+    """On macOS, transparently re-exec inside a Lima Linux VM so WiFi TX works."""
+    import shutil
+    import subprocess
+    import sys
+
+    VM_NAME = "airscope"
+
+    # Check if Lima is installed
+    if not shutil.which("limactl"):
+        print("\n  airscope needs a small Linux VM for WiFi attacks on macOS.")
+        print("  This is a one-time setup (~80MB download).\n")
+        try:
+            resp = input("  Install Lima now? [Y/n] ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            resp = "y"
+        if resp in ("", "y", "yes"):
+            print("  Installing Lima...")
+            subprocess.run(["brew", "install", "lima"], check=True)
+        else:
+            print("  Running in native mode (TX injection disabled).\n")
+            return
+
+    # Check if VM exists
+    result = subprocess.run(["limactl", "list", "--format", "{{.Name}} {{.Status}}"],
+                            capture_output=True, text=True)
+    vm_running = any(
+        line.startswith(VM_NAME) and "Running" in line
+        for line in result.stdout.splitlines()
+    )
+    vm_exists = any(
+        line.startswith(VM_NAME)
+        for line in result.stdout.splitlines()
+    )
+
+    if not vm_exists:
+        print("  Setting up Linux VM (one-time, ~2 min)...")
+        subprocess.run([
+            "limactl", "start", "template:alpine-3.21",
+            "--name", VM_NAME, "--cpus", "1", "--memory", "0.5", "--disk", "1",
+        ], check=True)
+        # Install airscope dependencies inside the VM
+        subprocess.run(["limactl", "shell", VM_NAME, "ash", "-c",
+                        "sudo apk update && sudo apk add --no-cache "
+                        "python3 py3-pip libusb-dev iw"],
+                       check=True)
+    elif not vm_running:
+        subprocess.run(["limactl", "start", VM_NAME], check=True)
+
+    # Re-exec inside the VM
+    import shlex
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    args_str = " ".join(shlex.quote(a) for a in sys.argv[1:])
+    cmd = (f"cd {shlex.quote(src_dir)} && "
+           f"if [ ! -d /tmp/airscope-venv/bin ]; then "
+           f"  python3 -m venv /tmp/airscope-venv && "
+           f"  /tmp/airscope-venv/bin/pip install -e '.' > /dev/null 2>&1; "
+           f"fi && "
+           f"AIRSCOPE_IN_VM=1 /tmp/airscope-venv/bin/airscope {args_str}")
+    result = subprocess.run(["limactl", "shell", VM_NAME, "ash", "-c", cmd])
+    sys.exit(result.returncode)
+
+
 def main() -> None:
     """Parse CLI args, then run the headless smoke test or launch the TUI."""
+    import sys as _sys
+
+    if _sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
+        _maybe_reexec_in_vm()
+
     import argparse
     from pathlib import Path
 
@@ -329,10 +398,12 @@ def main() -> None:
 
 def _print_startup_banner() -> None:
     """ANSI-colored startup banner printed before the TUI opens."""
+    import sys
     import time
     from airscope import __version__
     mint = "\033[38;2;125;240;196m"
     cyan = "\033[38;2;90;200;250m"
+    yellow = "\033[33m"
     dim = "\033[2m"
     reset = "\033[0m"
     lines = [
@@ -343,6 +414,12 @@ def _print_startup_banner() -> None:
     for line in lines:
         print(line)
         time.sleep(0.3)
+    if sys.platform == "darwin":
+        print()
+        print(f"{yellow}  macOS detected: TX injection (EvilTwin, deauth) works best in a Linux VM{reset}")
+        print(f"{dim}  Quick setup: bash scripts/vm/setup.sh{reset}")
+        print(f"{dim}  Then run:    bash scripts/vm/launch.sh{reset}")
+        print()
 
 
 if __name__ == "__main__":

@@ -1,0 +1,29 @@
+# airscope VM — Alpine Linux, built on Lima's official template.
+minimumLimaVersion: 2.0.0
+
+base:
+- template:alpine-3.21
+
+cpus: 1
+memory: 0.5
+disk: 1GiB
+
+mounts:
+- location: "~"
+  writable: true
+
+ssh:
+  localPort: 0
+
+containerd:
+  system: false
+  user: false
+
+provision:
+- mode: system
+  script: |
+    #!/bin/sh
+    set -eu
+    apk update
+    apk add --no-cache python3 py3-pip libusb-dev iw
+    rm -rf /var/cache/apk/*

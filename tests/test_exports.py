@@ -130,6 +130,7 @@ def test_cli_export_all(tmp_path, monkeypatch):
     monkeypatch.setattr("airscope.persist.config._PATH", tmp_path / "config.toml")
     monkeypatch.chdir(tmp_path)
     monkeypatch.setattr(sys, "argv", ["airscope", "--export", "all", "--out", "out"])
+    monkeypatch.setattr("airscope.__main__._maybe_reexec_in_vm", lambda: None)
     from airscope.__main__ import main
     with pytest.raises(SystemExit) as exc:
         main()

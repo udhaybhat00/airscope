@@ -273,7 +273,7 @@ class Rtl8822buDkmsDriver(Driver):
 
     async def _watchdog_loop(self) -> None:
         """Run `phydm_watchdog` every ~2 s (the vendor cadence) — read the FA counters, adapt the RX
-        IGI, reset the counters. Also verify TX is not paused (single REG_TXPAUSE read). Serialized
+        IGI, reset the counters. Also verify TX is not paused (REG_TXPAUSE read as 16-bit). Serialized
         with `set_channel` via `_io_lock`; control I/O only, never 802.11 TX."""
         loop = asyncio.get_running_loop()
         while True:
@@ -285,9 +285,9 @@ class Rtl8822buDkmsDriver(Driver):
                     fa = await loop.run_in_executor(
                         None, dm_watchdog.phydm_watchdog, self.transport, self._dig_st)
                     txpause = await loop.run_in_executor(
-                        None, self.transport.read8, 0x0522)
+                        None, self.transport.read16, 0x0522)
                 if txpause:
-                    logger.warning("[WATCHDOG] TXPAUSE=0x%02x — clearing", txpause)
+                    logger.warning("[WATCHDOG] TXPAUSE=0x%04x — clearing", txpause)
                     async with self._io_lock:
                         await loop.run_in_executor(
                             None, self.transport.write16, 0x0522, 0x0000)
@@ -416,19 +416,48 @@ class Rtl8822buDkmsDriver(Driver):
 
         async with self._io_lock:
             await loop.run_in_executor(None, _tune, self.transport)
+        # Verify the RF actually landed on the requested channel (read RF18 back).
+        actual_ch = await self._verify_channel(channel, loop)
+        if actual_ch is not None and actual_ch != channel:
+            logger.warning("[CHAN] tune reported ch%d but RF18 readback says ch%d — "
+                           "retrying once", channel, actual_ch)
+            async with self._io_lock:
+                await loop.run_in_executor(None, _tune, self.transport)
+            actual_ch = await self._verify_channel(channel, loop)
+            if actual_ch is not None and actual_ch != channel:
+                logger.error("[CHAN] second tune still on ch%d instead of ch%d", actual_ch, channel)
         self._channel = channel
         if band_change:
             await self._dbg_rx_state(f"post-tune ch{channel} (band change)")
         return True
 
+    async def _verify_channel(self, expected_ch: int, loop) -> Optional[int]:
+        """Read RF18 back and extract the channel number the RF is actually on."""
+        try:
+            async with self._io_lock:
+                rf18 = await loop.run_in_executor(
+                    None, lambda: sipi.read_rf_reg(self.transport, sipi.RF_PATH_A, 0x18))
+            actual_ch = rf18 & 0xFF
+            if logger.isEnabledFor(logging.DEBUG):
+                logger.debug("[CHAN] RF18 readback=0x%05x actual_ch=%d expected=%d",
+                             rf18, actual_ch, expected_ch)
+            return actual_ch
+        except Exception as exc:
+            logger.debug("[CHAN] RF18 readback failed: %s", exc)
+            return None
+
     async def _inject_frame(self, frame_bytes: bytes) -> bool:
         """Build the fill_fake_txdesc descriptor (`tx.build_inject_txdesc`, HW ACK-retry limit
-        12) and bulk-OUT the frame once."""
+        12) and bulk-OUT the frame once.  On macOS the IOKit USB backend can accept a
+        control-transfer register write (TXPAUSE clear) into its buffer but not propagate it
+        to the device before the subsequent bulk-OUT is scheduled.  A short sleep gives the
+        control pipe time to flush."""
         payload = tx.build_inject_txdesc(bytes(frame_bytes))
         loop = asyncio.get_running_loop()
         try:
             async with self._io_lock:
-                await loop.run_in_executor(None, self.transport.write8, 0x0522, 0x00)
+                await loop.run_in_executor(None, self.transport.write16, 0x0522, 0x0000)
+                await loop.run_in_executor(None, time.sleep, 0.001)
                 await loop.run_in_executor(None, self.transport.bulk_out, payload)
         except Exception as exc:
             logger.warning("[inject] bulk-OUT failed: %s", exc)
@@ -448,6 +477,72 @@ class Rtl8822buDkmsDriver(Driver):
             except Exception as exc:
                 logger.debug("[TXDIAG] register read failed: %s", exc)
         return True
+
+    async def check_tx_capability(self) -> tuple[bool, str]:
+        """Verify TX works: check DMA registers, send a test frame, and (on Linux
+        only) listen for it on RX.  On macOS the RX loopback is skipped because
+        macOS does not reflect injected frames back to the RX path (unlike
+        Linux mac80211), so TX verification is register-level only."""
+        import sys
+        from airscope.dot11.deauth import build_deauth
+        loop = asyncio.get_running_loop()
+        bcast = b"\xff\xff\xff\xff\xff\xff"
+        test_frame = build_deauth(bcast, bcast, bcast, 7)
+
+        ok = await self.inject_frame(test_frame)
+        if not ok:
+            return False, "bulk-OUT failed; adapter may be disconnected or busy"
+
+        try:
+            async with self._io_lock:
+                cr = await loop.run_in_executor(None, self.transport.read8, 0x0100)
+                txpause = await loop.run_in_executor(None, self.transport.read16, 0x0522)
+        except Exception as exc:
+            return False, f"register read-back failed: {exc}"
+
+        issues: list[str] = []
+        if not (cr & 0x01):
+            issues.append("HCI_TXDMA_EN not set")
+        if not (cr & 0x04):
+            issues.append("TXDMA_EN not set")
+        if txpause:
+            issues.append(f"TXPAUSE=0x{txpause:04x} (TX paused)")
+        if issues:
+            return False, "TX DMA issue: " + "; ".join(issues)
+
+        if sys.platform == "darwin":
+            return True, (f"TX registers OK (CR=0x{cr:02x} TXPAUSE=0x{txpause:04x}); "
+                          "macOS TX loopback not available — TX verified at USB level")
+
+        from airscope.dot11.mac import mac_to_str
+        marker = b"\x02\x00\x00\x00\x00\x01"
+        marker_str = mac_to_str(marker)
+        test_frame2 = build_deauth(bcast, marker, bcast, 7)
+        seen = asyncio.Event()
+        original_cb = self._rx_cb
+
+        def _watcher(pkt):
+            if pkt is not None and pkt.subtype_id == 12:
+                if pkt.source == marker_str or pkt.transmitter == marker_str:
+                    seen.set()
+            if original_cb is not None:
+                original_cb(pkt)
+
+        self._rx_cb = _watcher
+        try:
+            await self.inject_frame(test_frame2)
+            try:
+                await asyncio.wait_for(seen.wait(), timeout=0.3)
+            except asyncio.TimeoutError:
+                return False, (
+                    "TX test frame not seen on RX stream; the adapter may not "
+                    "be transmitting. Try: replug the adapter, or use a "
+                    "different adapter (e.g. Alfa AWUS036ACH with RTL8812AU)."
+                )
+        finally:
+            self._rx_cb = original_cb
+
+        return True, f"TX OK (loopback + registers: CR=0x{cr:02x} TXPAUSE=0x{txpause:04x})"
 
     def _stamp_tx_seq(self, frame_bytes: bytes) -> bytes:
         """Realtek HW assigns the 802.11 sequence number (the txdesc sets EN_HWSEQ), so the

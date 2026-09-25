@@ -249,6 +249,13 @@ def enable_monitor(t) -> None:
     txpause = t.read16(REG_TXPAUSE)
     if txpause:
         t.write16(REG_TXPAUSE, 0x0000)
+    # Disable firmware beacon generator so it doesn't steal the TX queue from
+    # userland-injected beacons.  BIT_EN_BCN_FUNCTION (bit 3) is set by
+    # init_edca_cfg; clear it here so our bulk-OUT beacons go through the
+    # normal TX DMA path uncontested.  Keep BIT(4) (DIS_ATIM) set.
+    bcn = t.read8(REG_BCN_CTRL)
+    if bcn & BIT_EN_BCN_FUNCTION:
+        t.write8(REG_BCN_CTRL, bcn & ~BIT_EN_BCN_FUNCTION)
 
 
 def set_mac_addr(t, mac: str) -> None:
