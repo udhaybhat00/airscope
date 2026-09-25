@@ -231,11 +231,17 @@ def _maybe_reexec_in_vm() -> None:
     passthrough may work via VT-d. On Apple Silicon, users should use the
     native RX-only mode or --connect for remote Linux.
     """
+    import platform
     import shutil
     import subprocess
     import sys
 
     VM_NAME = "airscope"
+
+    # Apple Silicon: USB passthrough to VMs is impossible (IOKit limitation).
+    # Skip VM re-exec and use native RX-only mode.
+    if platform.machine() == "arm64":
+        return
 
     if not shutil.which("limactl"):
         return
