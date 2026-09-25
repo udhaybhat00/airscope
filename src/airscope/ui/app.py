@@ -263,7 +263,7 @@ def _get_log_level(cli_log_level: Optional[str]) -> Optional[int]:
     return None  # any other value ("quiet") skips logging
 
 def _configure_file_logging(cli_log_level: Optional[str]) -> None:
-    """Files logged to ``airscope.log`` in the CWD."""
+    """Files logged to ``airscope.log`` in ``~/.airscope/``."""
     global _FILE_LOGGING_CONFIGURED
     if _FILE_LOGGING_CONFIGURED:
         return
@@ -272,7 +272,10 @@ def _configure_file_logging(cli_log_level: Optional[str]) -> None:
     if level is None:
         return
 
-    handler = logging.FileHandler("airscope.log", mode="w", encoding="utf-8")
+    from pathlib import Path
+    log_dir = Path.home() / ".airscope"
+    log_dir.mkdir(parents=True, exist_ok=True)
+    handler = logging.FileHandler(log_dir / "airscope.log", mode="w", encoding="utf-8")
     handler.setFormatter(logging.Formatter(
         "%(asctime)s.%(msecs)03d %(levelname)-5s %(name)s: %(message)s",
         datefmt="%H:%M:%S"
