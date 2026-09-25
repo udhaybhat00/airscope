@@ -341,14 +341,10 @@ def main() -> None:
         _sys.exit(0 if ok else 1)
 
     if args.web:
-        import sys
-
-        sys.exit(_web(args))
+        _sys.exit(_web(args))
 
     if args.export:
-        import sys
-
-        sys.exit(_export(args))
+        _sys.exit(_export(args))
 
     if args.smoke:
         import asyncio
@@ -359,9 +355,8 @@ def main() -> None:
 
     if args.auto:
         import asyncio
-        import sys
 
-        sys.exit(asyncio.run(_auto(args)))
+        _sys.exit(asyncio.run(_auto(args)))
 
     # Lazy import for WEP cracker ProcessPoolExecutor case
     from airscope.ui.app import AirscopeApp
@@ -379,7 +374,7 @@ def main() -> None:
             print("Fix the issues above, then run again.")
             print("Or run: uv run python -m airscope.doctor --list-usb")
             print("        uv run python -m airscope.doctor --add-adapter VID PID\n")
-            sys.exit(1)
+            _sys.exit(1)
 
         config_dir.mkdir(parents=True, exist_ok=True)
         (config_dir / "has_run_before").touch()
