@@ -95,9 +95,14 @@ class FakeAP:
 
     async def _beacon_loop(self) -> None:
         consecutive_errors = 0
+        first_beacon = True
         while self._running:
             try:
-                await self.iface.send_no_wait(self._restamp(self.twin_beacon))
+                frame = self._restamp(self.twin_beacon)
+                if first_beacon:
+                    first_beacon = False
+                    self._log_first_beacon(frame)
+                await self.iface.send_no_wait(frame)
                 consecutive_errors = 0
             except Exception:
                 consecutive_errors += 1
@@ -109,6 +114,21 @@ class FakeAP:
                 await asyncio.sleep(min(consecutive_errors * 0.5, 5.0))
                 continue
             await asyncio.sleep(_BEACON_PERIOD_S)
+
+    def _log_first_beacon(self, frame: bytes) -> None:
+        """Log the first beacon's DS Parameter Set (channel IE) for TX diagnostic."""
+        if len(frame) < 38:
+            return
+        i = 36
+        while i + 1 < len(frame):
+            eid = frame[i]
+            elen = frame[i + 1]
+            if eid == 0x03 and elen == 1:                    # DS Parameter Set
+                log.info("[fakeap] first beacon: DS channel=%d (expected=%d) frame_len=%d",
+                         frame[i + 2], self.channel, len(frame))
+                return
+            i += 2 + elen
+        log.warning("[fakeap] first beacon: no DS Parameter Set IE found (frame_len=%d)", len(frame))
 
     @staticmethod
     def _restamp(beacon: bytes) -> bytes:

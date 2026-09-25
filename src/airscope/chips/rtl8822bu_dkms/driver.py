@@ -11,8 +11,9 @@ RXFLTMAP0/1/2=0xFFFF). RX frames decode via `rx.iter_frames` (24-byte rx_pkt_des
 RSSI, FCS-stripped).
 
 Not registered in the manager (the mainline `chips/rtl8822bu/` owns 2357:0138); this `_dkms` port
-is exercised standalone via `scripts/chips/rtl8822bu_dkms/test_hw.py`. `inject_frame` is a stub — the TX
-descriptor is a later milestone, and the agent never fires live TX.
+is exercised standalone via `scripts/chips/rtl8822bu_dkms/test_hw.py`. `inject_frame` builds a
+48-byte fill_fake_txdesc + bulk-OUT payload (TX descriptor is unit-tested against the HALMAC
+field offsets + the XOR-16 checksum; live TX smoke-tested via deauth + beacon injection).
 """
 from __future__ import annotations
 
@@ -163,6 +164,7 @@ class Rtl8822buDkmsDriver(Driver):
         self._dbg_frames = 0
         self._dbg_beacons = 0
         self._dbg_rx = _RxDebugStats()
+        self._inject_diag_done = False
 
     @classmethod
     def from_usb_device(cls, dev: usb.core.Device, id_entry: DeviceID) -> "Rtl8822buDkmsDriver":
@@ -271,8 +273,8 @@ class Rtl8822buDkmsDriver(Driver):
 
     async def _watchdog_loop(self) -> None:
         """Run `phydm_watchdog` every ~2 s (the vendor cadence) — read the FA counters, adapt the RX
-        IGI, reset the counters. Serialized with `set_channel` via `_io_lock`; control I/O only, never
-        802.11 TX. A transient USB hiccup skips the tick rather than killing the loop."""
+        IGI, reset the counters. Also verify TX is not paused (single REG_TXPAUSE read). Serialized
+        with `set_channel` via `_io_lock`; control I/O only, never 802.11 TX."""
         loop = asyncio.get_running_loop()
         while True:
             await asyncio.sleep(2.0)
@@ -282,6 +284,13 @@ class Rtl8822buDkmsDriver(Driver):
                 async with self._io_lock:
                     fa = await loop.run_in_executor(
                         None, dm_watchdog.phydm_watchdog, self.transport, self._dig_st)
+                    txpause = await loop.run_in_executor(
+                        None, self.transport.read8, 0x0522)
+                if txpause:
+                    logger.warning("[WATCHDOG] TXPAUSE=0x%02x — clearing", txpause)
+                    async with self._io_lock:
+                        await loop.run_in_executor(
+                            None, self.transport.write16, 0x0522, 0x0000)
                 if logger.isEnabledFor(logging.DEBUG) and self._dig_st is not None:
                     logger.debug(
                         "[WATCHDOG] fa=%d cca=%d cck=%d ofdm=%d igi=0x%02x cckpd=%d cck_ma=%s",
@@ -423,6 +432,25 @@ class Rtl8822buDkmsDriver(Driver):
         except Exception as exc:
             logger.warning("[inject] bulk-OUT failed: %s", exc)
             return False
+        if logger.isEnabledFor(logging.DEBUG) and not self._inject_diag_done:
+            self._inject_diag_done = True
+            try:
+                async with self._io_lock:
+                    cr = await loop.run_in_executor(None, self.transport.read8, 0x0100)
+                    txpause = await loop.run_in_executor(None, self.transport.read8, 0x0522)
+                    pqmap = await loop.run_in_executor(None, self.transport.read16, 0x010C)
+                    bcn_ctrl = await loop.run_in_executor(None, self.transport.read8, 0x0550)
+                logger.debug("[TXDIAG] CR=0x%02x TXPAUSE=0x%02x PQMAP=0x%04x BCN_CTRL=0x%02x"
+                             " | CR.TXDMA=%d CR.HCI_TXDMA=%d",
+                             cr, txpause, pqmap, bcn_ctrl,
+                             bool(cr & 0x04), bool(cr & 0x01))
+                if txpause:
+                    logger.warning("[TXDIAG] TXPAUSE=0x%02x — TX is PAUSED! "
+                                   "clearing TXPAUSE", txpause)
+                    async with self._io_lock:
+                        await loop.run_in_executor(None, self.transport.write16, 0x0522, 0x0000)
+            except Exception as exc:
+                logger.debug("[TXDIAG] register read failed: %s", exc)
         return True
 
     def _stamp_tx_seq(self, frame_bytes: bytes) -> bytes:

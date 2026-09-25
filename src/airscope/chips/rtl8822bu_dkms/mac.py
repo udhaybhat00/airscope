@@ -222,7 +222,10 @@ def enable_monitor(t) -> None:
     frame lands right after; the vendor's monitor RCR is **0x90000001** (AAP|APP_PHYSTS|APP_FCS), not
     an ad-hoc value. Set MSR to no-link, set that RCR, put the DRVINFO in sniffer mode
     (config_rx_info(PHY_SNIFFER)), flag the DRVINFO-present bit (REG_RX_DRVINFO_SZ|=0x80), then open all
-    three RX filter maps (RXFLTMAP0/1/2 = 0xFFFF) after backing up their values."""
+    three RX filter maps (RXFLTMAP0/1/2 = 0xFFFF) after backing up their values.
+
+    Also verifies TX DMA is enabled (REG_CR bits HCI_TXDMA_EN + TXDMA_EN) and clears TXPAUSE,
+    so injected frames actually reach the air."""
     t.write8(REG_MSR, t.read8(REG_MSR) & ~0x3)                  # Set_MSR(NOLINK), port 0 [1:0]=0
     t.read32(REG_RCR)                                           # get_hwreg(HW_VAR_RCR) — backup
     t.write32(REG_RCR, BIT_AAP | BIT_APP_PHYSTS | BIT_APP_FCS)  # radiotap monitor RCR (0x90000001)
@@ -234,6 +237,18 @@ def enable_monitor(t) -> None:
     t.write16(REG_RXFLTMAP0, 0xFFFF)
     t.write16(REG_RXFLTMAP1, 0xFFFF)
     t.write16(REG_RXFLTMAP2, 0xFFFF)
+    # --- TX path: verify DMA enabled and TX not paused ---
+    cr = t.read8(REG_CR)
+    need_cr = 0
+    if not (cr & 0x01):                                          # BIT_HCI_TXDMA_EN
+        need_cr |= 0x01
+    if not (cr & 0x04):                                          # BIT_TXDMA_EN
+        need_cr |= 0x04
+    if need_cr:
+        t.write8(REG_CR, cr | need_cr)
+    txpause = t.read16(REG_TXPAUSE)
+    if txpause:
+        t.write16(REG_TXPAUSE, 0x0000)
 
 
 def set_mac_addr(t, mac: str) -> None:
