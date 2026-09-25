@@ -284,20 +284,29 @@ def _maybe_reexec_in_wsl() -> None:
     if not shutil.which("wsl"):
         return
 
-    result = subprocess.run(["wsl", "-l", "-v"], capture_output=True, text=True,
-                            encoding="utf-16-le", errors="replace")
+    try:
+        result = subprocess.run(["wsl", "-l", "-v"], capture_output=True, text=True,
+                                encoding="utf-16-le", errors="replace")
+    except Exception:
+        return
     if "running" not in result.stdout.lower():
-        print("\n  Starting WSL2...")
-        subprocess.run(["wsl", "-d", "Ubuntu", "-e", "echo", "ready"], check=True)
+        try:
+            subprocess.run(["wsl", "-d", "Ubuntu", "-e", "echo", "ready"],
+                           check=True, timeout=15)
+        except Exception:
+            return
 
     src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     import shlex
     args_str = " ".join(shlex.quote(a) for a in sys.argv[1:])
 
-    usb_check = subprocess.run(
-        ["wsl", "-e", "bash", "-c",
-         "lsusb 2>/dev/null | grep -i '2357\\|0bda\\|148f' || echo NONE"],
-        capture_output=True, text=True)
+    try:
+        usb_check = subprocess.run(
+            ["wsl", "-e", "bash", "-c",
+             "lsusb 2>/dev/null | grep -i '2357\\|0bda\\|148f' || echo NONE"],
+            capture_output=True, text=True, timeout=10)
+    except Exception:
+        return
 
     if "NONE" in usb_check.stdout:
         print("\n  No WiFi adapter found in WSL2.")
