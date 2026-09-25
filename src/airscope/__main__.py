@@ -224,29 +224,22 @@ def _web(args) -> int:
 
 
 def _maybe_reexec_in_vm() -> None:
-    """On macOS, transparently re-exec inside a Lima Linux VM so WiFi TX works."""
+    """On macOS, transparently re-exec inside a Lima Linux VM so WiFi TX works.
+
+    NOTE: Apple Silicon USB passthrough is broken for WiFi adapters (Lima VZ,
+    QEMU, all VM tools). This function is a fallback for Intel Macs where USB
+    passthrough may work via VT-d. On Apple Silicon, users should use the
+    native RX-only mode or --connect for remote Linux.
+    """
     import shutil
     import subprocess
     import sys
 
     VM_NAME = "airscope"
 
-    # Check if Lima is installed
     if not shutil.which("limactl"):
-        print("\n  airscope needs a small Linux VM for WiFi attacks on macOS.")
-        print("  This is a one-time setup (~80MB download).\n")
-        try:
-            resp = input("  Install Lima now? [Y/n] ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            resp = "y"
-        if resp in ("", "y", "yes"):
-            print("  Installing Lima...")
-            subprocess.run(["brew", "install", "lima"], check=True)
-        else:
-            print("  Running in native mode (TX injection disabled).\n")
-            return
+        return
 
-    # Check if VM exists
     result = subprocess.run(["limactl", "list", "--format", "{{.Name}} {{.Status}}"],
                             capture_output=True, text=True)
     vm_running = any(
@@ -259,20 +252,10 @@ def _maybe_reexec_in_vm() -> None:
     )
 
     if not vm_exists:
-        print("  Setting up Linux VM (one-time, ~2 min)...")
-        subprocess.run([
-            "limactl", "start", "template:alpine-3.21",
-            "--name", VM_NAME, "--cpus", "1", "--memory", "0.5", "--disk", "1",
-        ], check=True)
-        # Install airscope dependencies inside the VM
-        subprocess.run(["limactl", "shell", VM_NAME, "ash", "-c",
-                        "sudo apk update && sudo apk add --no-cache "
-                        "python3 py3-pip libusb-dev iw"],
-                       check=True)
+        return
     elif not vm_running:
         subprocess.run(["limactl", "start", VM_NAME], check=True)
 
-    # Re-exec inside the VM
     import shlex
     src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
     args_str = " ".join(shlex.quote(a) for a in sys.argv[1:])
@@ -286,11 +269,53 @@ def _maybe_reexec_in_vm() -> None:
     sys.exit(result.returncode)
 
 
+def _maybe_reexec_in_wsl() -> None:
+    """On Windows, transparently re-exec inside WSL2 with USB passthrough."""
+    import shutil
+    import subprocess
+    import sys
+
+    if not shutil.which("wsl"):
+        return
+
+    result = subprocess.run(["wsl", "-l", "-v"], capture_output=True, text=True,
+                            encoding="utf-16-le", errors="replace")
+    if "running" not in result.stdout.lower():
+        print("\n  Starting WSL2...")
+        subprocess.run(["wsl", "-d", "Ubuntu", "-e", "echo", "ready"], check=True)
+
+    src_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
+    import shlex
+    args_str = " ".join(shlex.quote(a) for a in sys.argv[1:])
+
+    usb_check = subprocess.run(
+        ["wsl", "-e", "bash", "-c",
+         "lsusb 2>/dev/null | grep -i '2357\\|0bda\\|148f' || echo NONE"],
+        capture_output=True, text=True)
+
+    if "NONE" in usb_check.stdout:
+        print("\n  No WiFi adapter found in WSL2.")
+        print("  Attach it with: usbipd wsl attach --busid <BUSID>")
+        print("  (Run PowerShell as Administrator)\n")
+        return
+
+    cmd = (f"cd {shlex.quote(src_dir)} && "
+           f"if [ ! -d /tmp/airscope-venv/bin ]; then "
+           f"  python3 -m venv /tmp/airscope-venv && "
+           f"  /tmp/airscope-venv/bin/pip install -e '.' > /dev/null 2>&1; "
+           f"fi && "
+           f"AIRSCOPE_IN_VM=1 /tmp/airscope-venv/bin/airscope {args_str}")
+    result = subprocess.run(["wsl", "-e", "bash", "-c", cmd])
+    sys.exit(result.returncode)
+
+
 def main() -> None:
     """Parse CLI args, then run the headless smoke test or launch the TUI."""
     import sys as _sys
 
-    if _sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
+    if _sys.platform == "win32" and not os.environ.get("AIRSCOPE_IN_VM"):
+        _maybe_reexec_in_wsl()
+    elif _sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
         _maybe_reexec_in_vm()
 
     import argparse
@@ -399,6 +424,7 @@ def _print_startup_banner() -> None:
     mint = "\033[38;2;125;240;196m"
     cyan = "\033[38;2;90;200;250m"
     yellow = "\033[33m"
+    green = "\033[32m"
     dim = "\033[2m"
     reset = "\033[0m"
     lines = [
@@ -409,11 +435,19 @@ def _print_startup_banner() -> None:
     for line in lines:
         print(line)
         time.sleep(0.3)
-    if sys.platform == "darwin":
+
+    if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
         print()
-        print(f"{yellow}  macOS detected: TX injection (EvilTwin, deauth) works best in a Linux VM{reset}")
-        print(f"{dim}  Quick setup: bash scripts/vm/setup.sh{reset}")
-        print(f"{dim}  Then run:    bash scripts/vm/launch.sh{reset}")
+        print(f"{yellow}  macOS native mode{reset}")
+        print(f"{green}    + Scanning, packet capture, handshake parsing{reset}")
+        print(f"{yellow}    ~ TX injection (deauth, evil twin) requires Linux{reset}")
+        print(f"{dim}    Tip: plug adapter into a Linux box, run airscope there{reset}")
+        print(f"{dim}    then connect from Mac: airscope --connect user@linux-host{reset}")
+        print()
+    elif sys.platform == "win32" and not os.environ.get("AIRSCOPE_IN_VM"):
+        print()
+        print(f"{green}  Windows mode: full features via WSL2{reset}")
+        print(f"{dim}  Attach adapter: usbipd wsl attach --busid <BUSID>{reset}")
         print()
 
 

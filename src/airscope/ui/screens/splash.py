@@ -239,11 +239,20 @@ class SplashView(Screen):
                     yield Button("Captured Results", id="vault-btn")
                     yield Button("Settings", id="prefs-btn")
             with Center():
-                yield Label(
-                    "[dim]Plug in your supported USB Wi-Fi adapter and select it here "
-                    "to begin scanning nearby networks[/dim]",
-                    id="help-strip")
+                yield Label(self._platform_hint(), id="help-strip")
         yield Footer()
+
+    @staticmethod
+    def _platform_hint() -> str:
+        import sys
+        import os
+        if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
+            return ("[yellow]macOS: scanning/capture only. "
+                    "TX injection (deauth, evil twin) requires Linux.\n"
+                    "  Plug adapter into a Linux box and run: "
+                    "airscope --connect user@host[/yellow]")
+        return ("[dim]Plug in your supported USB Wi-Fi adapter and select it here "
+                "to begin scanning nearby networks[/dim]")
 
     def _both_lists(self):
         return (self.query_one("#device-list", ListView),

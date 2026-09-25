@@ -115,6 +115,30 @@ def run_doctor() -> list[CheckResult]:
             "Install: curl -LsSf https://astral.sh/uv/install.sh | sh",
         ))
 
+    if system == "Darwin" and not __import__("os").environ.get("AIRSCOPE_IN_VM"):
+        results.append(CheckResult(
+            "Platform capabilities", Status.WARN,
+            "macOS: scanning/capture works. TX injection (deauth, evil twin) "
+            "requires Linux.",
+            "Plug adapter into a Linux box (Raspberry Pi, old laptop, cloud VM), "
+            "run airscope there, then:\n"
+            "  airscope --connect user@linux-host",
+        ))
+    elif system == "Windows" and not __import__("os").environ.get("AIRSCOPE_IN_VM"):
+        import shutil as _shutil
+        if _shutil.which("wsl"):
+            results.append(CheckResult(
+                "Platform capabilities", Status.OK,
+                "Windows + WSL2: full features. Attach adapter with:\n"
+                "  usbipd wsl attach --busid <BUSID>",
+            ))
+        else:
+            results.append(CheckResult(
+                "Platform capabilities", Status.WARN,
+                "WSL2 not found. Install it for full features:\n"
+                "  wsl --install",
+            ))
+
     return results
 
 
