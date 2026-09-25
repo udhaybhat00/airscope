@@ -364,7 +364,7 @@ def main() -> None:
     config_dir = Path.home() / ".airscope"
     first_run = not (config_dir / "has_run_before").exists()
 
-    if first_run:
+    if first_run and not os.environ.get("AIRSCOPE_IN_VM"):
         from airscope.doctor import run_doctor, print_report
         print("\nFirst run -- checking setup...\n")
         results = run_doctor()
