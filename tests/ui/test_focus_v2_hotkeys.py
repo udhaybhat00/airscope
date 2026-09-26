@@ -29,8 +29,8 @@ from airscope.ui import focus_model as fm
 
 @pytest.fixture(autouse=True)
 def _neutralise_macos_gate(monkeypatch):
-    """Tests exercise hotkey state without the host-OS TX gate (macOS blocks TX natively)."""
-    monkeypatch.setattr(fm, "_macos_tx_blocked", lambda: None)
+    """Tests exercise hotkey state without the host-OS platform gate (macOS native gates only EvilTwin)."""
+    monkeypatch.setattr(fm, "platform_block_reason", lambda key: None)
 
 
 class MockDriver:

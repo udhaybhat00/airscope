@@ -260,8 +260,9 @@ class HeadlessContext:
     def eligible_attacks(self, ap) -> List[dict]:
         """Attack buttons for one AP: kind/label plus the block reason (if any).
 
-        Same gating as the Focus screen (``visible()`` + ``ineligible_reason()``),
-        so the dashboard can never offer what the TUI would grey out.
+        Same gating as the Focus screen (``visible()`` + ``ineligible_reason()``
+        + the platform gate), so the dashboard can never offer what the TUI
+        would grey out. Demo mode skips the platform gate (nothing is real).
         """
         from airscope.campaigns.deauth import DeauthCampaign
         from airscope.campaigns.eviltwin import EvilTwinCampaign
@@ -269,6 +270,7 @@ class HeadlessContext:
         from airscope.campaigns.pmkid import PmkidHarvestAttack
         from airscope.campaigns.sae import SaeCampaign
         from airscope.persist.config import Config
+        from airscope.ui.focus_model import platform_block_reason
         out = []
         for cls, kind in ((WpsCampaign, "wps"), (PmkidHarvestAttack, "pmkid"),
                           (DeauthCampaign, "handshake"), (SaeCampaign, "sae"),
@@ -278,7 +280,9 @@ class HeadlessContext:
             if Config.is_silenced(ap.bssid):
                 reason = "AP silenced"
             else:
-                reason = cls.ineligible_reason(ap)
+                reason = None if self.demo else platform_block_reason(cls.key)
+                if reason is None:
+                    reason = cls.ineligible_reason(ap)
             out.append({"kind": kind, "label": cls.idle_label,
                         "blocked": reason})
         return out
@@ -361,6 +365,10 @@ class HeadlessContext:
     async def _start_eviltwin(self, ap, punt: bool) -> dict:
         from airscope.campaigns.eviltwin import (
             EvilTwinCampaign, EvilTwinInput, default_punt_modes)
+        from airscope.ui.focus_model import platform_block_reason
+        reason = platform_block_reason(EvilTwinCampaign.key)
+        if reason is not None:
+            raise _Blocked(reason)
         try:
             iface = self.array.select_iface(ap.channel) or self.array.select_iface(ap.channel)
             if iface is None:

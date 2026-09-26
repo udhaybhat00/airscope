@@ -247,10 +247,8 @@ class SplashView(Screen):
         import sys
         import os
         if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
-            return ("[yellow]macOS: scanning/capture only. "
-                    "TX injection (deauth, evil twin) requires Linux.\n"
-                    "  Plug adapter into a Linux box and run: "
-                    "airscope --connect user@host[/yellow]")
+            return ("[yellow]macOS: deauth, WPS, PMKID, WEP and SAE run natively.\n"
+                    "  Only the EvilTwin fake-AP phishing page needs Linux.[/yellow]")
         return ("[dim]Plug in your supported USB Wi-Fi adapter and select it here "
                 "to begin scanning nearby networks[/dim]")
 

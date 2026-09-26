@@ -85,7 +85,7 @@ airscope reinvents the stack from the USB endpoint up:
 
 - **No kernel drivers.** We talk to the USB device directly from userspace via PyUSB. The adapter never needs `airmon-ng`, `modprobe`, or a DKMS build on your machine.
 - **No external tools.** The 802.11 frame stack, DHCP server, DNS blackhole, HTTP captive portal, handshake parser, and WPS machinery are all pure Python in this repository. There is no `hostapd` subprocess, no `dnsmasq` config, no shell-out to `reaver`.
-- **One codebase, three OSes.** The same Python runs on Linux, Windows (via WSL2), and macOS. Platform differences are detected at runtime and communicated clearly to the user (for example, macOS shows "TX injection requires Linux" on every attack button it cannot perform).
+- **One codebase, three OSes.** The same Python runs on Linux, Windows (via WSL2), and macOS. Platform differences are detected at runtime and communicated clearly to the user (for example, on macOS the EvilTwin button is disabled with the tooltip "Fake-AP phishing page requires Linux", while every other attack runs natively).
 - **A real interface.** A 60fps Textual TUI plus an optional web dashboard, instead of a wall of terminal output.
 
 ### Concrete advantages
@@ -137,7 +137,7 @@ uv run python -m airscope.doctor   # pre-flight check
 ```bash
 brew install uv libusb
 uv sync --group dev
-uv run airscope          # scanning + capture work natively
+uv run airscope          # full attacks run natively (EvilTwin portal needs Linux)
 ```
 
 ### Step 3: Plug in your adapter and run
@@ -160,7 +160,7 @@ This is the part most users and reviewers want to see first: **exactly what happ
 |----|------|:----:|:-------:|:-----------------:|
 | **Linux** | Native userspace, direct USB | Full | Full | Full |
 | **Windows** | Auto-re-exec into WSL2, USB shared via usbipd-win | Full | Full | Full |
-| **macOS** | Native userspace; TX gate in UI | Full | Full | Blocked by Apple (shown clearly in UI) |
+| **macOS** | Native userspace; TX verified over-the-air | Full | Full | Deauth/WEP full; EvilTwin portal Linux-only (labelled) |
 
 ### Linux: the native path
 
@@ -223,7 +223,7 @@ usbipd attach --wsl --busid 2-3  # attach to WSL2
 
 **Graceful degradation:** if WSL2 or the adapter is missing, airscope does **not** crash. Every WSL call is wrapped so the app prints actionable instructions and continues in native mode.
 
-### macOS: honest about limits
+### macOS: full attacks, one exception
 
 ```mermaid
 flowchart TD
@@ -237,24 +237,25 @@ flowchart TD
     G --> H["Scanner + capture: full RX path via libpcap / USB bulk-IN"]
     H --> I["User picks a target → Focus screen"]
     I --> J{"campaign_blocked()"}
-    J --> K["_macos_tx_blocked() → 'macOS blocks TX injection - requires Linux'"]
-    K --> L["EvilTwin / Deauth / WEP / PMKID / WPS buttons disabled + tooltip"]
-    J -- "SAE is passive (RX only)" --> M["SAE stays enabled"]
+    J --> K["platform_block_reason(): only the EvilTwin key is gated on macOS"]
+    K --> L["EvilTwin disabled: 'Fake-AP phishing page requires Linux'"]
+    J -- "deauth / WPS / PMKID / WEP / SAE" --> M["Enabled: TX verified over-the-air"]
 ```
 
 **What works natively on macOS:**
 - USB device detection and control transfers (register reads/writes)
 - Passive scanning and handshake capture (via `libpcap` and the system `airport` tool for channel control)
+- **Frame transmission**: deauth, WPS/EAPOL, PMKID probes, WEP replay and SAE frames all go out over the air. Verified live on an RTL8822BU: an auth request reached a real AP and its auth response (status=0) came back
 - Vault, reports, web dashboard, hashing/cracking
 
-**What Apple blocks:** transmitting arbitrary 802.11 frames. IOKit accepts bulk-OUT writes into a buffer but never schedules them on the air. This is enforced at the OS level, not in airscope, and no userspace workaround exists. We surface this honestly:
+**The one exception: the EvilTwin fake-AP phishing page.** Its captive portal hands out DHCP/DNS through dnsmasq bound to a real OS-level interface, looked up in `/sys/class/net` (Linux-only). macOS never creates a system interface for these adapters (no Apple driver), so the portal has nothing to bind to. We surface that honestly instead of letting the button fail at runtime:
 
-- Every TX-dependent attack button is disabled with the tooltip **"macOS blocks TX injection - requires Linux"**
-- The splash screen shows a yellow hint about the limitation
-- The startup banner and the doctor both print what works and what does not
-- Passive attacks (SAE capture) remain fully available
+- The EvilTwin button is disabled with the tooltip **"Fake-AP phishing page requires Linux"**
+- The splash screen, startup banner and doctor all state the same single exception
+- The web dashboard applies the same gate (blocked label in the list, 422 on start)
+- Every other attack (deauth, WPS, PMKID, WEP, SAE) is fully enabled
 
-**Why we do not "just fix it":** Apple's Virtualization framework also refuses USB passthrough on Apple Silicon (until macOS 27), so even a Linux VM on the Mac cannot see the adapter. The practical answers are a Raspberry Pi or any Linux box.
+**Why not run the portal in a Linux VM on the Mac?** Apple's Virtualization framework refuses USB passthrough on Apple Silicon (until macOS 27), so even a Lima/QEMU VM cannot see the adapter there (Intel Macs with an existing Lima VM do get the VM path automatically). The practical answers are a Raspberry Pi or any Linux box.
 
 ### Side-by-side: the same code, three realities
 
@@ -282,8 +283,8 @@ flowchart TD
              ▼                     ▼                      ▼
       ┌─────────────────────────────────────────────────────────┐
       │            USB WiFi adapter (e.g. RTL8812AU)           │
-      │   RX: always works        TX: Linux/Win only (blocked  │
-      │                             on macOS by the kernel)    │
+      │   RX: always works        TX: works on Linux/Win/macOS │
+      │                           EvilTwin portal: Linux only  │
       └─────────────────────────────────────────────────────────┘
 ```
 
@@ -649,7 +650,7 @@ airscope/
 | "No adapter found" (Linux) | No udev rule | Press START → allow the pkexec prompt |
 | "No adapter found" (macOS) | IOKit authorization denied | System Settings → Privacy & Security → allow |
 | Permission denied (Linux) | No udev rule | `echo 'SUBSYSTEM=="usb", MODE="0666"' \| sudo tee /etc/udev/rules.d/99-airscope.rules && sudo udevadm control --reload` |
-| TX attacks greyed out on macOS | Apple blocks frame injection | Expected: use a Linux box for EvilTwin/deauth |
+| EvilTwin button disabled on macOS | Portal needs a Linux host interface | Expected: every other attack runs natively; use a Linux box for the phishing page |
 | WSL2 cannot see the adapter | Not attached | `usbipd list` → `usbipd attach --wsl --busid <ID>` |
 | Adapter visible but not detected | Uncommon VID:PID | `uv run python -m airscope.doctor --add-adapter <VID> <PID>` |
 | PyInstaller binary crashes | Missing libusb | Install `libusb-1.0` (Linux) / WinUSB (Windows) |

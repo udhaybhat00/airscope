@@ -37,8 +37,8 @@ def _reset_active():
 
 @pytest.fixture(autouse=True)
 def _neutralise_macos_gate(monkeypatch):
-    """Tests exercise button state without the host-OS TX gate (macOS blocks TX natively)."""
-    monkeypatch.setattr(fm, "_macos_tx_blocked", lambda: None)
+    """Tests exercise button state without the host-OS platform gate (macOS native gates only EvilTwin)."""
+    monkeypatch.setattr(fm, "platform_block_reason", lambda key: None)
 
 
 def _running(key, **extra):

@@ -117,12 +117,10 @@ def run_doctor() -> list[CheckResult]:
 
     if system == "Darwin" and not __import__("os").environ.get("AIRSCOPE_IN_VM"):
         results.append(CheckResult(
-            "Platform capabilities", Status.WARN,
-            "macOS: scanning/capture works. TX injection (deauth, evil twin) "
-            "requires Linux.",
-            "Plug adapter into a Linux box (Raspberry Pi, old laptop, cloud VM), "
-            "run airscope there, then:\n"
-            "  airscope --connect user@linux-host",
+            "Platform capabilities", Status.OK,
+            "macOS: full attacks (deauth, WPS, PMKID, WEP, SAE) run natively. "
+            "Only the EvilTwin fake-AP phishing page is off: its captive portal "
+            "needs a Linux host network interface (dnsmasq).",
         ))
     elif system == "Windows" and not __import__("os").environ.get("AIRSCOPE_IN_VM"):
         import shutil as _shutil

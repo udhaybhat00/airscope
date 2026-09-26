@@ -33,30 +33,35 @@ BUTTON_CAMPAIGNS = [WepCampaign, DeauthCampaign, PmkidHarvestAttack, WpsCampaign
 
 CAMPAIGN_BY_KEY = {cls.key: cls for cls in BUTTON_CAMPAIGNS}
 
-# Campaigns that are purely passive (RX-only) and work on macOS natively.
-_PASSIVE_KEYS = {"sae"}
 
+def platform_block_reason(key: str) -> Optional[str]:
+    """Why campaign ``key`` is unavailable on this platform, or None if it runs.
 
-def _macos_tx_blocked() -> Optional[str]:
-    """Reason TX attacks are unavailable on macOS native, or None if TX works."""
-    if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
-        return "macOS blocks TX injection - requires Linux"
+    TX injection works on macOS natively (verified over-the-air: auth request
+    answered by a real AP). The one campaign kept off there is the EvilTwin
+    fake-AP portal: its DHCP/DNS captive stack binds a Linux host interface
+    (``/sys/class/net`` + dnsmasq), which macOS never creates for these
+    adapters. Linux (and the Linux VM via AIRSCOPE_IN_VM) allow everything.
+    """
+    if (key == EvilTwinCampaign.key and sys.platform == "darwin"
+            and not os.environ.get("AIRSCOPE_IN_VM")):
+        return "Fake-AP phishing page requires Linux"
     return None
 
 
 def campaign_blocked(cls, ap) -> Optional[str]:
     """Why cls's attack button is disabled right now, or None if it can start:
-    the AP is silenced, another campaign owns the radio, or the campaign's own
-    ineligible_reason (hidden SSID, WPS locked, unconfirmed encryption, …)."""
+    the AP is silenced, another campaign owns the radio, the platform blocks
+    this one campaign, or the campaign's own ineligible_reason (hidden SSID,
+    WPS locked, unconfirmed encryption, ...)."""
     if Config.is_silenced(ap.bssid):
         return "AP silenced"
     active = Campaign.active
     if active is not None and active.key != cls.key:
         return f"Blocked ({active.key} is active)"
-    if cls.key not in _PASSIVE_KEYS:
-        mac_reason = _macos_tx_blocked()
-        if mac_reason is not None:
-            return mac_reason
+    plat = platform_block_reason(cls.key)
+    if plat is not None:
+        return plat
     return cls.ineligible_reason(ap)
 
 

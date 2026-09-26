@@ -224,12 +224,12 @@ def _web(args) -> int:
 
 
 def _maybe_reexec_in_vm() -> None:
-    """On macOS, transparently re-exec inside a Lima Linux VM so WiFi TX works.
+    """On macOS, optionally re-exec inside a Lima Linux VM (Intel Macs).
 
-    NOTE: Apple Silicon USB passthrough is broken for WiFi adapters (Lima VZ,
-    QEMU, all VM tools). This function is a fallback for Intel Macs where USB
-    passthrough may work via VT-d. On Apple Silicon, users should use the
-    native RX-only mode or --connect for remote Linux.
+    The VM path covers the one native gap: the EvilTwin captive portal needs
+    a Linux host network interface. NOTE: Apple Silicon USB passthrough is
+    broken for WiFi adapters (Lima VZ, QEMU, all VM tools), so arm64 skips
+    this and runs native mode (every attack except that portal).
     """
     import platform
     import shutil
@@ -239,7 +239,7 @@ def _maybe_reexec_in_vm() -> None:
     VM_NAME = "airscope"
 
     # Apple Silicon: USB passthrough to VMs is impossible (IOKit limitation).
-    # Skip VM re-exec and use native RX-only mode.
+    # Skip VM re-exec; native mode runs all attacks but the EvilTwin portal.
     if platform.machine() == "arm64":
         return
 
@@ -454,10 +454,9 @@ def _print_startup_banner() -> None:
     if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
         print()
         print(f"{yellow}  macOS native mode{reset}")
-        print(f"{green}    + Scanning, packet capture, handshake parsing{reset}")
-        print(f"{yellow}    ~ TX injection (deauth, evil twin) requires Linux{reset}")
-        print(f"{dim}    Tip: plug adapter into a Linux box, run airscope there{reset}")
-        print(f"{dim}    then connect from Mac: airscope --connect user@linux-host{reset}")
+        print(f"{green}    + Full attacks: deauth, WPS, PMKID, WEP, SAE{reset}")
+        print(f"{green}    + Scanning, capture, vault, cracking{reset}")
+        print(f"{yellow}    ~ EvilTwin fake-AP phishing page requires Linux{reset}")
         print()
     elif sys.platform == "win32" and not os.environ.get("AIRSCOPE_IN_VM"):
         print()
