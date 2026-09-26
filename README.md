@@ -18,7 +18,7 @@
   <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-brightgreen" alt="Platform">
   <a href="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml"><img src="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/tests-2982%2B-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/tests-3008%2B-blue" alt="Tests">
   <img src="https://img.shields.io/badge/chipsets-20-brightgreen" alt="Chipsets">
   <img src="https://img.shields.io/badge/pure-Python-orange" alt="Pure Python">
 </p>
@@ -99,7 +99,7 @@ airscope reinvents the stack from the USB endpoint up:
 | **EvilTwin password check** | Real-time MIC verify, no offline crack | Manual export to hashcat | Manual |
 | **WPA3 SAE handling** | Downgrade + MIC capture | Partial | No |
 | **Interface** | TUI + web dashboard | CLI | CLI + xterm |
-| **Test coverage** | 2,982 tests, hardware mocked | C unit tests | None |
+| **Test coverage** | 3,008 tests, hardware mocked | C unit tests | None |
 | **Distribution** | Single PyInstaller binary | Package per distro | Script |
 
 ---
@@ -531,7 +531,7 @@ Captive-portal detection triggers the native popup on every OS: iOS/macOS (`/hot
 | **WPA3 SAE** | Yes (downgrade + MIC) | Partial | No | No |
 | **WPS PixieDust** | Yes | Yes (reaver) | No | Yes (reaver) |
 | **Single binary** | Yes (PyInstaller) | No | No | No |
-| **Tests** | 2,982 (hardware mocked) | C unit tests | None | None |
+| **Tests** | 3,008 (hardware mocked) | C unit tests | None | None |
 | **Language** | Python | C | Bash | Bash |
 
 ---
@@ -571,7 +571,7 @@ A summary of what this project demonstrates — useful for anyone reviewing the 
 
 ### Quality engineering
 
-- **2,982 tests, zero hardware** — all USB interactions mocked via `pytest-mock`; `asyncio_mode=auto`
+- **3,008 tests, zero hardware** — all USB interactions mocked via `pytest-mock`; `asyncio_mode=auto`
 - **Three CI workflows** — lint + tests on every push, PyInstaller release builds for 3 OSes with smoke tests, fingerprint data updates
 - **Style guards as tests** — em-dash ban, comment policy enforced by `test_style.py`
 - **PyInstaller distribution** — one executable per OS, version sourced from a single `__version__` literal
@@ -589,7 +589,7 @@ A summary of what this project demonstrates — useful for anyone reviewing the 
 ```bash
 uv sync --group dev        # install
 uv run airscope            # run
-uv run pytest              # test (2,982 tests, no hardware needed)
+uv run pytest              # test (3,008 tests, no hardware needed)
 uv run ruff check src/     # lint (never format)
 uv run textual run --dev src/airscope/ui/app.py   # hot-reload TUI
 ```
@@ -612,7 +612,7 @@ airscope/
 │   ├── chips/               # 25 driver packages, 20 chipsets (transport/firmware/MAC/PHY/RX/TX)
 │   ├── persist/             # capture storage, config, report export
 │   └── web/                 # optional dashboard
-├── tests/                   # 292 test files, 2,982 tests
+├── tests/                   # 293 test files, 3,008 tests
 ├── docs/                    # HARDWARE, FIRMWARE, ACKS, THEMES, porting guides
 ├── scripts/                 # setup/launch scripts per OS
 └── .github/workflows/       # ci.yml, release.yml
@@ -625,7 +625,7 @@ airscope/
 - [docs/ACKS.md](docs/ACKS.md) — ACK/retry architecture
 - [docs/THEMES.md](docs/THEMES.md) — theme customization
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, PR guidelines
-- [AGENTS.md](AGENTS.md) — AI-assisted development conventions
+- [Landing page](https://udhaybhat00.github.io/airscope/) — feature overview and downloads (GitHub Pages)
 
 ---
 

@@ -76,8 +76,8 @@ A few things hold for every driver:
   messages and the chip doc, never in code.
 - Start the chip's reference doc (CHIP-DOC.md) as you go.
 
-The `Driver` ABC your `driver.py` must subclass is in CLAUDE.md → "Adding a New Chipset" (the
-runtime methods + `SUPPORTED_CHANNELS`). Two registration rules the ABC does not enforce:
+The `Driver` ABC your `driver.py` must subclass is `airscope.chips.driver.Driver` (the runtime
+methods + `SUPPORTED_CHANNELS`). Two registration rules the ABC does not enforce:
 
 - **`chips/<name>/__init__.py` declares the VID:PIDs**, not the driver class. It sets
   `SUPPORTED_IDS = [DeviceID(...), ...]` (`from airscope.models.device_id import DeviceID`) and a

@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>airscope — wireless auditor</title>
+<meta name="description" content="Airscope: a pure-Python 802.11 auditing tool. Scan, capture, deauth, WPS, PMKID, WEP, EvilTwin. Linux, Windows (WSL2), macOS.">
+<meta property="og:title" content="airscope — wireless auditor">
+<meta property="og:description" content="Pure-Python 802.11 auditing: scan, capture, attack. One codebase, three OSes.">
+<meta property="og:image" content="img/demo-tour.gif">
+<style>
+  :root {
+    --primary: #60a5fa; --secondary: #a78bfa; --accent: #f59e0b;
+    --foreground: #e2e8f0; --background: #0b0f19; --success: #34d399;
+    --warning: #fbbf24; --error: #f87171; --surface: #131825;
+    --panel: #1a2033; --muted: #64748b; --track: #1e293b; --attack: #c084fc;
+  }
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+  html { scroll-behavior: smooth; }
+  body {
+    background: var(--background); color: var(--foreground);
+    font-family: Inter, system-ui, -apple-system, sans-serif;
+    line-height: 1.6;
+  }
+  code, .mono { font-family: 'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace; }
+  a { color: var(--primary); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  header {
+    position: sticky; top: 0; z-index: 10;
+    display: flex; align-items: center; gap: 1.5rem;
+    padding: 0.8rem 1.5rem;
+    background: rgba(11, 15, 25, 0.92); backdrop-filter: blur(8px);
+    border-bottom: 1px solid var(--track);
+  }
+  .brand { font-weight: 700; color: var(--primary); font-family: ui-monospace, monospace; letter-spacing: 0.12em; }
+  .brand small { color: var(--muted); font-weight: 400; letter-spacing: normal; }
+  nav { display: flex; gap: 1.25rem; margin-left: auto; font-size: 0.9rem; }
+  nav a { color: var(--muted); }
+  nav a:hover { color: var(--foreground); text-decoration: none; }
+
+  .hero { max-width: 960px; margin: 0 auto; padding: 4rem 1.5rem 2rem; text-align: center; }
+  .wordmark { font-family: ui-monospace, monospace; font-size: clamp(2rem, 6vw, 3.5rem); font-weight: 700; letter-spacing: 0.45em; text-indent: 0.45em; color: var(--foreground); }
+  .tagline { margin-top: 0.4rem; font-style: italic; color: var(--muted); font-family: ui-monospace, monospace; }
+  .hero p.sub { margin: 1.4rem auto 0; max-width: 640px; color: var(--muted); }
+  .hero p.sub b { color: var(--foreground); font-weight: 600; }
+
+  .buttons { display: flex; flex-wrap: wrap; gap: 0.7rem; justify-content: center; margin-top: 2rem; }
+  .btn {
+    display: inline-block; padding: 0.65rem 1.2rem; border-radius: 6px;
+    font-weight: 600; font-size: 0.95rem; border: 1px solid var(--track);
+    background: var(--surface); color: var(--foreground); font-family: ui-monospace, monospace;
+  }
+  .btn:hover { border-color: var(--primary); text-decoration: none; }
+  .btn.primary { background: var(--primary); border-color: var(--primary); color: #0b0f19; }
+  .btn.primary:hover { filter: brightness(1.1); }
+  .btn small { display: block; font-size: 0.7rem; font-weight: 400; color: inherit; opacity: 0.75; }
+  .btn.primary small { color: #0b0f19; }
+
+  .window {
+    max-width: 880px; margin: 3rem auto 0; border-radius: 10px; overflow: hidden;
+    border: 1px solid var(--track); background: var(--surface);
+    box-shadow: 0 24px 60px rgba(0, 0, 0, 0.55);
+  }
+  .window .chrome { display: flex; gap: 7px; padding: 9px 12px; background: var(--panel); border-bottom: 1px solid var(--track); }
+  .window .chrome i { width: 11px; height: 11px; border-radius: 50%; display: block; }
+  .window .chrome i:nth-child(1) { background: #ff5f57; }
+  .window .chrome i:nth-child(2) { background: #febc2e; }
+  .window .chrome i:nth-child(3) { background: #28c840; }
+  .window img { display: block; width: 100%; }
+
+  section { max-width: 960px; margin: 0 auto; padding: 3.5rem 1.5rem 1rem; }
+  h2 { font-size: 1.5rem; margin-bottom: 1.2rem; }
+  h2::before { content: "▸ "; color: var(--primary); }
+
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 1rem; }
+  .card { background: var(--surface); border: 1px solid var(--track); border-radius: 8px; padding: 1.1rem 1.2rem; }
+  .card h3 { font-size: 1rem; margin-bottom: 0.4rem; font-family: ui-monospace, monospace; }
+  .card h3 .dot { color: var(--success); }
+  .card p { font-size: 0.9rem; color: var(--muted); }
+  .card p b { color: var(--foreground); font-weight: 600; }
+  .card.warn h3 .dot { color: var(--warning); }
+
+  .shots { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 1rem; }
+  .shots figure { margin: 0; border: 1px solid var(--track); border-radius: 8px; overflow: hidden; background: var(--surface); }
+  .shots img { display: block; width: 100%; }
+  .shots figcaption { padding: 0.5rem 0.8rem; font-size: 0.78rem; color: var(--muted); font-family: ui-monospace, monospace; border-top: 1px solid var(--track); }
+
+  .specs { width: 100%; border-collapse: collapse; font-size: 0.92rem; }
+  .specs td { padding: 0.55rem 0.8rem; border-bottom: 1px solid var(--track); }
+  .specs td:first-child { color: var(--muted); font-family: ui-monospace, monospace; width: 38%; }
+  .specs .yes { color: var(--success); }
+
+  footer {
+    margin-top: 4rem; padding: 2rem 1.5rem; border-top: 1px solid var(--track);
+    text-align: center; color: var(--muted); font-size: 0.85rem;
+  }
+  footer .disclaimer { max-width: 620px; margin: 0.5rem auto 0; font-size: 0.78rem; color: var(--muted); }
+</style>
+</head>
+<body>
+
+<header>
+  <span class="brand">AIRSCOPE <small>wireless auditor</small></span>
+  <nav>
+    <a href="#features">Features</a>
+    <a href="#screens">Screens</a>
+    <a href="#download">Download</a>
+    <a href="https://github.com/udhaybhat00/airscope#readme">Docs</a>
+    <a href="https://github.com/udhaybhat00/airscope">GitHub</a>
+  </nav>
+</header>
+
+<div class="hero">
+  <div class="wordmark">AIRSCOPE</div>
+  <div class="tagline">wireless auditor</div>
+  <p class="sub">A <b>pure-Python 802.11 auditing tool</b> that talks to your Wi-Fi adapter
+  straight from userspace: scanning, handshake capture, deauth, WPS, PMKID, WEP and a
+  3-step EvilTwin — <b>one codebase on Linux, Windows (WSL2) and macOS</b>.</p>
+
+  <div class="buttons">
+    <a class="btn primary" href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-macos-universal2">
+      <small>macOS · Apple Silicon + Intel</small>Download .command</a>
+    <a class="btn primary" href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-linux-x64">
+      <small>Linux · x86_64</small>Download binary</a>
+    <a class="btn" href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-linux-arm64">
+      <small>Linux · ARM64</small>Download binary</a>
+    <a class="btn" href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-windows-x64.exe">
+      <small>Windows · x64 (WSL2)</small>Download .exe</a>
+  </div>
+
+  <div class="window">
+    <div class="chrome"><i></i><i></i><i></i></div>
+    <img src="img/demo-tour.gif" alt="airscope demo: splash, scanner, focus screen, vault" width="800">
+  </div>
+</div>
+
+<section id="features">
+  <h2>Features</h2>
+  <div class="grid">
+    <div class="card">
+      <h3><span class="dot">●</span> Recon &amp; capture</h3>
+      <p>Live scanner with <b>freeze mode</b> (<code>F</code>), channel hopping, client tracking,
+      handshake + PMKID capture, vendor/OUI intel.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot">●</span> Attack suite</h3>
+      <p>AutoDeauth, WPS PIN + PBC, PMKID harvest, WEP replay, WPA3-SAE —
+      <b>running natively on macOS</b> too, verified over-the-air.</p>
+    </div>
+    <div class="card warn">
+      <h3><span class="dot">●</span> EvilTwin · 3 steps</h3>
+      <p>Real handshake first, then a WPA2 twin with live deauth, then online
+      MIC-recovery of the PSK. <b>The captive-portal variant needs a Linux host
+      interface</b> — the one platform exception, labelled clearly in the UI.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot">●</span> Vault &amp; cracking</h3>
+      <p>Captures land in a vault per-network; crack with <b>hashcat or aircrack-ng</b>
+      with live progress, exports to pcap/hc22000/CSV/HTML.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot">●</span> Two interfaces</h3>
+      <p>A <b>60fps Textual TUI</b> and an optional <b>web dashboard</b>
+      (<code>--web</code>), both driven by the same engine.</p>
+    </div>
+    <div class="card">
+      <h3><span class="dot">●</span> No kernel, no suite</h3>
+      <p>Userspace USB via PyUSB — <b>no kernel drivers, no aircrack-ng, no hostapd</b>.
+      The 802.11 stack, DHCP and captive portal are Python in this repo.</p>
+    </div>
+  </div>
+</section>
+
+<section id="screens">
+  <h2>Screens</h2>
+  <div class="shots">
+    <figure>
+      <img src="img/scanner.png" alt="Scanner with freeze mode" loading="lazy">
+      <figcaption>scanner · freeze mode keeps rows still while you pick</figcaption>
+    </figure>
+    <figure>
+      <img src="img/focus.png" alt="Focus screen with attack cards" loading="lazy">
+      <figcaption>focus · attack cards, live packet dashboard, clients</figcaption>
+    </figure>
+  </div>
+</section>
+
+<section id="download">
+  <h2>Download v0.3.7</h2>
+  <table class="specs">
+    <tr><td>macOS (universal2)</td><td><a href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-macos-universal2">airscope-macos-universal2</a> · full attacks native; EvilTwin portal is the Linux-only exception</td></tr>
+    <tr><td>Linux x64 / arm64</td><td><a href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-linux-x64">airscope-linux-x64</a> · <a href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-linux-arm64">airscope-linux-arm64</a> · everything</td></tr>
+    <tr><td>Windows x64</td><td><a href="https://github.com/udhaybhat00/airscope/releases/download/v0.3.7/airscope-windows-x64.exe">airscope-windows-x64.exe</a> · auto-runs inside WSL2 with usbipd</td></tr>
+    <tr><td>From source</td><td class="mono">git clone … &amp;&amp; uv sync --group dev &amp;&amp; uv run airscope</td></tr>
+    <tr><td>Supported adapters</td><td><span class="yes">20 chipsets / 25 drivers</span> graded — see <a href="https://github.com/udhaybhat00/airscope/blob/main/docs/SUPPORTED-HARDWARE.md">SUPPORTED-HARDWARE.md</a></td></tr>
+    <tr><td>Tests</td><td><span class="yes">3,008 passing</span>, hardware fully mocked</td></tr>
+  </table>
+</section>
+
+<footer>
+  <div>AIRSCOPE · GPL-2.0 · <a href="https://github.com/udhaybhat00/airscope">github.com/udhaybhat00/airscope</a></div>
+  <p class="disclaimer">For authorized security testing and education only. Attacking networks
+  you do not own or have explicit permission to test is illegal.</p>
+</footer>
+
+</body>
+</html>
