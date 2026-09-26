@@ -206,7 +206,7 @@ def _web(args) -> int:
         import uvicorn
     except ImportError:
         print("airscope: web extras missing. Install them with:\n"
-              "  pip install 'fastapi>=0.115' 'uvicorn[standard]>=0.30'")
+              "  uv sync --extra web        (or: pip install 'airscope[web]')")
         return 2
 
     from airscope.web import create_app

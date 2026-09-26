@@ -13,7 +13,7 @@ def create_app(context=None):
     except ImportError as e:
         raise SystemExit(
             "airscope: web extras missing. Install them with:\n"
-            "  pip install 'fastapi>=0.115' 'uvicorn[standard]>=0.30'"
+            "  uv sync --extra web        (or: pip install 'airscope[web]')"
         ) from e
 
     from airscope.web.context import HeadlessContext

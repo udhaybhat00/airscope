@@ -18,8 +18,8 @@
   <img src="https://img.shields.io/badge/python-%3E%3D3.11-blue" alt="Python 3.11+">
   <img src="https://img.shields.io/badge/platform-Linux%20%7C%20Windows%20%7C%20macOS-brightgreen" alt="Platform">
   <a href="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml"><img src="https://github.com/udhaybhat00/airscope/actions/workflows/ci.yml/badge.svg" alt="CI"></a>
-  <img src="https://img.shields.io/badge/tests-2970%2B-blue" alt="Tests">
-  <img src="https://img.shields.io/badge/chipsets-28-brightgreen" alt="Chipsets">
+  <img src="https://img.shields.io/badge/tests-2982%2B-blue" alt="Tests">
+  <img src="https://img.shields.io/badge/chipsets-20-brightgreen" alt="Chipsets">
   <img src="https://img.shields.io/badge/pure-Python-orange" alt="Pure Python">
 </p>
 
@@ -99,7 +99,7 @@ airscope reinvents the stack from the USB endpoint up:
 | **EvilTwin password check** | Real-time MIC verify, no offline crack | Manual export to hashcat | Manual |
 | **WPA3 SAE handling** | Downgrade + MIC capture | Partial | No |
 | **Interface** | TUI + web dashboard | CLI | CLI + xterm |
-| **Test coverage** | 2,970 tests, hardware mocked | C unit tests | None |
+| **Test coverage** | 2,982 tests, hardware mocked | C unit tests | None |
 | **Distribution** | Single PyInstaller binary | Package per distro | Script |
 
 ---
@@ -327,7 +327,7 @@ flowchart TD
 │  └──────────────────────────┬────────────────────────────────────┘  │
 │                             │                                       │
 │  ┌──────────────────────────┴────────────────────────────────────┐  │
-│  │ chips/ — one driver package per chipset (28 supported)       │  │
+│  │ chips/ — one driver package per chipset (20 supported)       │  │
 │  │ transport (bulk + control) · firmware · MAC/PHY/RX/TX        │  │
 │  │ Auto-discovered by VID:PID, lazy import                      │  │
 │  └──────────────────────────┬────────────────────────────────────┘  │
@@ -398,7 +398,7 @@ flowchart TD
 
 ## Supported Hardware
 
-Any USB Wi-Fi adapter with a supported chipset should work. airscope auto-detects adapters by USB vendor/product ID — **28 chipset packages** are in the tree.
+Any USB Wi-Fi adapter with a supported chipset should work. airscope auto-detects adapters by USB vendor/product ID — **20 chipsets across 25 driver packages** are in the tree.
 
 ### Recommended adapters
 
@@ -468,7 +468,7 @@ uv run airscope --auto --targets HomeNet,OfficeWiFi --scan-secs 60
 # Just list what is in range
 uv run airscope --auto --list
 
-# Web dashboard
+# Web dashboard (needs the web extra: uv sync --extra web)
 uv run airscope --web
 uv run airscope --web --demo        # no hardware needed
 
@@ -530,7 +530,7 @@ Captive-portal detection triggers the native popup on every OS: iOS/macOS (`/hot
 | **WPA3 SAE** | Yes (downgrade + MIC) | Partial | No | No |
 | **WPS PixieDust** | Yes | Yes (reaver) | No | Yes (reaver) |
 | **Single binary** | Yes (PyInstaller) | No | No | No |
-| **Tests** | 2,970 (hardware mocked) | C unit tests | None | None |
+| **Tests** | 2,982 (hardware mocked) | C unit tests | None | None |
 | **Language** | Python | C | Bash | Bash |
 
 ---
@@ -544,7 +544,7 @@ A summary of what this project demonstrates — useful for anyone reviewing the 
 - **802.11 frame engineering** — crafting and parsing beacons, auth/assoc, deauth, EAPOL, probe, WSC/WPS IEs from raw bytes; sequence numbers, MMIE, RSNE/RSNX analysis
 - **USB userspace programming** — PyUSB control transfers (register read/write), bulk endpoints, TX/RX descriptors, firmware upload, per-chipset bring-up sequences
 - **ACK reliability model** — three-layer ACK architecture: RX tally, chip hardware retry, and software retransmit with timeout, per [docs/ACKS.md](docs/ACKS.md)
-- **Reverse-engineered register maps** — ported MAC/PHY/RF/EFUSE init from kernel C drivers into pure Python for 28 chipsets
+- **Reverse-engineered register maps** — ported MAC/PHY/RF/EFUSE init from kernel C drivers into pure Python for 20 chipsets
 - **Userland network stack** — DHCP server, DNS blackhole, TCP state machine, and HTTP captive portal implemented from scratch for the EvilTwin AP
 
 ### Cross-platform engineering
@@ -570,7 +570,7 @@ A summary of what this project demonstrates — useful for anyone reviewing the 
 
 ### Quality engineering
 
-- **2,970 tests, zero hardware** — all USB interactions mocked via `pytest-mock`; `asyncio_mode=auto`
+- **2,982 tests, zero hardware** — all USB interactions mocked via `pytest-mock`; `asyncio_mode=auto`
 - **Three CI workflows** — lint + tests on every push, PyInstaller release builds for 3 OSes with smoke tests, fingerprint data updates
 - **Style guards as tests** — em-dash ban, comment policy enforced by `test_style.py`
 - **PyInstaller distribution** — one executable per OS, version sourced from a single `__version__` literal
@@ -588,7 +588,7 @@ A summary of what this project demonstrates — useful for anyone reviewing the 
 ```bash
 uv sync --group dev        # install
 uv run airscope            # run
-uv run pytest              # test (2,970 tests, no hardware needed)
+uv run pytest              # test (2,982 tests, no hardware needed)
 uv run ruff check src/     # lint (never format)
 uv run textual run --dev src/airscope/ui/app.py   # hot-reload TUI
 ```
@@ -608,10 +608,10 @@ airscope/
 │   ├── campaigns/           # EvilTwin, deauth, WPS, WEP, PMKID, SAE, batch
 │   ├── evil_twin/           # captive portal, userland AP, USB worker
 │   ├── crack/               # handshake parser, PMKID, MIC verify, WPA-PSK
-│   ├── chips/               # 28 chipset driver packages (transport/firmware/MAC/PHY/RX/TX)
-│   ├── vault/               # capture storage, report export
+│   ├── chips/               # 25 driver packages, 20 chipsets (transport/firmware/MAC/PHY/RX/TX)
+│   ├── persist/             # capture storage, config, report export
 │   └── web/                 # optional dashboard
-├── tests/                   # 312 test files, 2,970 tests
+├── tests/                   # 292 test files, 2,982 tests
 ├── docs/                    # HARDWARE, FIRMWARE, ACKS, THEMES, porting guides
 ├── scripts/                 # setup/launch scripts per OS
 └── .github/workflows/       # ci.yml, release.yml

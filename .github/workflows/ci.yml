@@ -27,8 +27,10 @@ jobs:
           python-version: "3.12"
           enable-cache: true
 
-      - name: Sync env (runtime + dev deps)
-        run: uv sync --group dev
+      - name: Sync env (runtime + dev deps + web extra)
+        # --extra web so tests/web/ actually runs (fastapi + httpx TestClient); without it
+        # those tests skip silently and the API surface is never exercised in CI.
+        run: uv sync --group dev --extra web
 
       # Lint only — NEVER `ruff format` (this tree is hand-formatted ~99-col; the formatter is a
       # deliberate no-op repo-wide). See pyproject.toml / CLAUDE.md.

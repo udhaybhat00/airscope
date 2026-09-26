@@ -86,7 +86,7 @@ class ApWorker:
 
 
 # ---------------------------------------------------------------------------
-# UsbWorker - low-level PyUSB thread (standalone EvilTwinAttack flow)
+# UsbWorker - low-level PyUSB thread for the captive-portal EvilTwin
 # ---------------------------------------------------------------------------
 
 class UsbWorker:

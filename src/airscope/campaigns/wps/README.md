@@ -23,8 +23,8 @@ The attack machinery lives here in `campaigns/wps/`:
   pixie bundle (PKE, PKR, E-Hash1/2, E-Nonce, AuthKey) after M3.
 - `enrollee.py` (`WpsEnrollee`): the role-flipped machine for PBC.
 - `pins.py`: the PIN keyspace (checksum, two-halves split, ordering, resume).
-- `known_pins.py` / `wps_algos.py` / `wps_router_ouis.py`: per-OUI default-PIN candidates
-  and the OUI-to-vendor lookup.
+- `known_pins.py` / `wps_algos.py` / `wps_pindb.py`: per-OUI default-PIN candidates
+  (the OUI tables live in `wps_pindb.py`; OUI-to-vendor lookup in `airscope.id`).
 - `lock.py`: lock detection (the beacon AP-Setup-Locked IE plus a 3-strike M3-NACK
   heuristic for silent lockers) and adaptive backoff that learns per-router lock duration.
 
@@ -106,7 +106,8 @@ registrar/association/campaign path is driver-agnostic; validate each card with
 ## Default-PIN candidates
 
 Before the full sweep, `known_pins.py` tries per-vendor default-PIN generators
-(`wps_algos.py`, dispatched by OUI via `wps_router_ouis.py`): the ComputePIN and Airocon
+(`wps_algos.py`, dispatched by OUI via the `OUI_PINS` / `OUI_ALGOS` tables in
+`wps_pindb.py`): the ComputePIN and Airocon
 style algorithms plus the trivial cases, which are the majority of real hits on aging gear.
 
 ## PBC (push-button) capture

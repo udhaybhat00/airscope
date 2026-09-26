@@ -4,7 +4,7 @@ import pytest
 try:
     from fastapi.testclient import TestClient
 except (ImportError, RuntimeError):
-    pytest.skip("web tests require the [web] extra (httpx2)", allow_module_level=True)
+    pytest.skip("web tests require the [web] extra", allow_module_level=True)
 
 from airscope.web import create_app
 from airscope.web.bus import Bus

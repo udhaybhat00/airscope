@@ -20,6 +20,8 @@ airscope = "airscope.__main__:main"
 [project.optional-dependencies]
 web = [
     "fastapi>=0.115",
+    # FastAPI's TestClient is httpx-based; without it tests/web/ skips silently.
+    "httpx>=0.27",
     "uvicorn[standard]>=0.30",
 ]
 
