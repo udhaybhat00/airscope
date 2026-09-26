@@ -35,6 +35,12 @@ def _reset_active():
     Campaign.active = None
 
 
+@pytest.fixture(autouse=True)
+def _neutralise_macos_gate(monkeypatch):
+    """Tests exercise button state without the host-OS TX gate (macOS blocks TX natively)."""
+    monkeypatch.setattr(fm, "_macos_tx_blocked", lambda: None)
+
+
 def _running(key, **extra):
     """A stand-in for the active campaign (only .key + any extra attrs are read)."""
     return types.SimpleNamespace(key=key, **extra)

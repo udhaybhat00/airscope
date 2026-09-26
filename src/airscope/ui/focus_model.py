@@ -1,6 +1,8 @@
 """View-model for the Focus screen."""
 from __future__ import annotations
 
+import os
+import sys
 from collections import Counter, deque
 from dataclasses import dataclass
 from typing import Optional, TYPE_CHECKING
@@ -31,6 +33,16 @@ BUTTON_CAMPAIGNS = [WepCampaign, DeauthCampaign, PmkidHarvestAttack, WpsCampaign
 
 CAMPAIGN_BY_KEY = {cls.key: cls for cls in BUTTON_CAMPAIGNS}
 
+# Campaigns that are purely passive (RX-only) and work on macOS natively.
+_PASSIVE_KEYS = {"sae"}
+
+
+def _macos_tx_blocked() -> Optional[str]:
+    """Reason TX attacks are unavailable on macOS native, or None if TX works."""
+    if sys.platform == "darwin" and not os.environ.get("AIRSCOPE_IN_VM"):
+        return "macOS blocks TX injection - requires Linux"
+    return None
+
 
 def campaign_blocked(cls, ap) -> Optional[str]:
     """Why cls's attack button is disabled right now, or None if it can start:
@@ -41,6 +53,10 @@ def campaign_blocked(cls, ap) -> Optional[str]:
     active = Campaign.active
     if active is not None and active.key != cls.key:
         return f"Blocked ({active.key} is active)"
+    if cls.key not in _PASSIVE_KEYS:
+        mac_reason = _macos_tx_blocked()
+        if mac_reason is not None:
+            return mac_reason
     return cls.ineligible_reason(ap)
 
 

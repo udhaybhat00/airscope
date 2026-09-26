@@ -24,6 +24,14 @@ from airscope.wlan.sink import WlanSink
 
 from tests.frames import pkt
 
+from airscope.ui import focus_model as fm
+
+
+@pytest.fixture(autouse=True)
+def _neutralise_macos_gate(monkeypatch):
+    """Tests exercise hotkey state without the host-OS TX gate (macOS blocks TX natively)."""
+    monkeypatch.setattr(fm, "_macos_tx_blocked", lambda: None)
+
 
 class MockDriver:
     async def set_channel(self, ch, scan=False):
