@@ -5,12 +5,7 @@
 <h1 align="center">airscope</h1>
 
 <p align="center">
-  <strong>Cross-platform Wi-Fi security auditor. Pure Python. Zero kernel drivers.</strong>
-</p>
-
-<p align="center">
-  Scan networks. Capture handshakes. Test your defenses.<br>
-  One beautiful terminal app that runs on Linux, Windows, and macOS.
+  <strong>The only Wi-Fi security auditor that runs natively on Windows, macOS, and Linux — no monitor-mode setup, no kernel drivers, no aircrack-ng dependency.</strong>
 </p>
 
 <p align="center">
@@ -669,6 +664,8 @@ More: [docs/LINUX-PERMISSIONS.md](docs/LINUX-PERMISSIONS.md).
 - [ ] Cloud report sharing
 
 ---
+
+[![Star History Chart](https://api.star-history.com/svg?repos=udhaybhat00/airscope&type=Date)](https://star-history.com/#udhaybhat00/airscope&Date)
 
 ## License & Legal
 
