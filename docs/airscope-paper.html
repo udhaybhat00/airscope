@@ -1,0 +1,523 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>airscope: Kernel-Independent Wi-Fi Security Auditing in Pure Python</title>
+<style>
+  @page { size: A4; margin: 20mm 18mm 20mm 18mm; }
+  * { box-sizing: border-box; }
+  body {
+    font-family: "Times New Roman", Times, Georgia, serif;
+    font-size: 11pt; line-height: 1.45; color: #111;
+    margin: 0; text-align: justify;
+  }
+  .journal-head {
+    border-bottom: 1px solid #999; padding-bottom: 8px; margin-bottom: 14px;
+    font-size: 9pt; color: #333; text-align: left; line-height: 1.4;
+  }
+  .journal-head .review { font-weight: bold; font-size: 9.5pt; margin-bottom: 6px; }
+  .journal-head .meta span { display: inline-block; margin-right: 14px; }
+  .journal-head .citation { margin-top: 8px; font-style: italic; }
+  .review-badge {
+    display: inline-block; background: #2a5db0; color: #fff; font-weight: bold;
+    font-size: 8.5pt; padding: 1px 7px; border-radius: 2px; margin-right: 8px;
+    font-family: Arial, sans-serif; letter-spacing: .5px; vertical-align: 1px;
+  }
+  h1.title {
+    font-size: 17pt; text-align: center; margin: 16px 0 10px; line-height: 1.3;
+    font-weight: bold;
+  }
+  .authors { text-align: center; font-size: 11pt; margin-bottom: 4px; }
+  .affil { text-align: center; font-size: 9.5pt; font-style: italic; color: #333; margin-bottom: 2px; }
+  .corr { text-align: center; font-size: 9.5pt; font-style: italic; color: #333; margin-bottom: 14px; }
+  .abstract {
+    font-size: 10pt; text-align: justify; margin: 12px 0 6px;
+    padding: 0 0;
+  }
+  .abstract .lbl { font-weight: bold; font-style: italic; }
+  .keywords { font-size: 10pt; margin: 6px 0 16px; text-align: justify; }
+  .keywords .lbl { font-weight: bold; font-style: italic; }
+  h2 { font-size: 12pt; margin: 18px 0 6px; text-align: left; }
+  h3 { font-size: 11pt; margin: 14px 0 4px; text-align: left; font-style: italic; font-weight: bold; }
+  p { margin: 0 0 8px; }
+  .indent { text-indent: 1.5em; }
+  ol.refs { font-size: 9.5pt; padding-left: 2.2em; }
+  ol.refs li { margin-bottom: 5px; text-align: left; }
+  table { border-collapse: collapse; width: 100%; font-size: 9.5pt; margin: 10px 0 4px; }
+  th, td { border: 1px solid #777; padding: 4px 6px; text-align: left; vertical-align: top; }
+  th { background: #eef1f5; font-weight: bold; }
+  td.c, th.c { text-align: center; }
+  .caption { font-size: 9.5pt; font-style: italic; text-align: left; margin: 2px 0 12px; color: #222; }
+  .fig {
+    font-family: "Courier New", monospace; font-size: 7.6pt; line-height: 1.25;
+    background: #f7f8fa; border: 1px solid #999; padding: 8px 10px;
+    white-space: pre; overflow: hidden; margin: 10px 0 3px; text-align: left;
+  }
+  .eq { text-align: center; font-size: 11pt; margin: 10px 0; }
+  .note { font-size: 9pt; color: #444; font-style: italic; margin-top: 4px; }
+  ul, ol { margin: 4px 0 8px; padding-left: 1.8em; }
+  li { margin-bottom: 4px; }
+  .sec-n { display: inline; }
+</style>
+</head>
+<body>
+
+<div class="journal-head">
+  <div class="review"><span class="review-badge">PREPRINT</span>Technical report of the airscope project &mdash; not peer reviewed</div>
+  <div class="meta">
+    <span><b>Received:</b> 20 September 2026</span>
+    <span><b>Revised:</b> 26 September 2026</span>
+    <span><b>Accepted:</b> 26 September 2026</span>
+    <span><b>Published:</b> 6 October 2026</span>
+  </div>
+  <div class="citation">Citation: airscope Project. airscope: Kernel-Independent Wi-Fi Security Auditing in
+  Pure Python. Preprint 2026, v0.3.8. https://github.com/udhaybhat00/airscope</div>
+  <div style="margin-top:6px">Copyright &copy; 2026 by the author. Distributed under the GNU General Public
+  License v2.0 (code) &mdash; this document describes software intended exclusively for use on networks
+  you own or are explicitly authorized to audit.</div>
+</div>
+
+<h1 class="title">airscope: Kernel-Independent Wi-Fi Security Auditing in Pure Python</h1>
+
+<div class="authors">udhaybhat00 <sup>1</sup></div>
+<div class="affil"><sup>1</sup> airscope project, Independent Research &middot; Correspondence via
+https://github.com/udhaybhat00/airscope/issues</div>
+<div class="corr">* Corresponding author: repository issue tracker</div>
+
+<div class="abstract">
+<span class="lbl">Abstract:</span> Wi-Fi security auditing is dominated by a toolchain that is
+Linux-only, kernel-dependent, and assembled from five or more loosely coupled programs:
+practitioners install monitor-mode drivers that break on kernel updates and chain
+<em>airmon-ng</em> with <em>aircrack-ng</em>, <em>hostapd</em>, <em>dnsmasq</em>, <em>reaver</em>
+and <em>mdk3</em>, shuttling results between terminals by hand. This paper presents
+<b>airscope</b>, a framework that reinvents that stack from the USB endpoint up in pure Python:
+a userspace 802.11 implementation that drives Wi-Fi adapters directly through PyUSB, a complete
+userland access-point stack (frame crafting, DHCP, DNS blackhole, HTTP captive portal) with
+real-time MIC verification of submitted credentials, and a three-layer acknowledgement
+reliability model &mdash; with no kernel modules, no external daemons, and a single codebase
+running on Linux, Windows and macOS. The implementation comprises 256,364 lines of Python across
+658 source modules, drives 20 chipsets through 25 driver packages, and is validated by 3,008
+mocked-hardware tests plus a five-axis hardware verification rubric (RX, TX, ACKs, port fidelity,
+stress) that grades each adapter card on measured behaviour rather than anecdote. We report the
+architecture, the portability model, the evaluation methodology and results, and &mdash; with
+equal weight &mdash; the limitations: the EvilTwin portal requires Linux, Windows support rides
+on USB passthrough into WSL2, campaigns serialize on a single radio, and WPA3 attacks cannot
+exceed what the protocol's downgrade surface permits. airscope is released as single-file
+binaries for four platform targets and is intended exclusively for authorized auditing.
+</div>
+
+<div class="keywords"><span class="lbl">Keywords:</span> Wi-Fi security; 802.11; userspace
+drivers; cross-platform; EvilTwin; PMKID; WPA/WPA2; WPS; security auditing; pure Python</div>
+
+<h2>1. Introduction</h2>
+
+<p>Wi-Fi auditing in 2024+ still looks like this: install a security distribution, run
+<em>airmon-ng</em>, fight driver versions, hope a kernel module build does not break the kernel,
+pipe five different tools together, and copy-paste output between terminals. That workflow has
+four structural problems. It is <b>Linux-only</b>: nothing in the classic stack cares about
+Windows or macOS users. It is <b>kernel-dependent</b>: monitor mode requires out-of-tree drivers
+that break on kernel and distribution upgrades. It is <b>glued together</b>: aircrack-ng,
+hostapd, dnsmasq, reaver and mdk3 are separate projects with separate configuration dialects
+whose integration layer is the human operator. And it is <b>hostile to newcomers</b>: an error
+such as <em>ioctl SIOCSIWMODE failed: Operation not supported</em> teaches nobody anything.</p>
+
+<p>None of these problems is a property of 802.11 itself. Frame injection is a property of the
+radio's firmware and MAC; it requires no kernel module. A captive-portal access point needs
+DHCP, DNS, TCP and HTTP &mdash; protocols whose smallest correct implementations fit in a few
+thousand lines. The monitor-mode ioctl exists because tools chose to live below the network
+stack rather than beside it. airscope moves the entire stack into userspace, in one language,
+in one process:</p>
+
+<ul>
+<li><b>No kernel drivers.</b> Adapters are driven directly from userspace via PyUSB/libusb; the
+radio never needs <em>airmon-ng</em>, <em>modprobe</em>, or a DKMS build on the auditing machine.</li>
+<li><b>No external tools.</b> The 802.11 frame stack, DHCP server, DNS blackhole, HTTP portal,
+handshake parser, PMKID extractor and WPS machinery are all pure Python in one repository &mdash;
+no <em>hostapd</em> subprocess, no <em>dnsmasq</em> configuration, no shell-out to <em>reaver</em>.</li>
+<li><b>One codebase, three OSes.</b> The same Python runs on Linux, Windows (via WSL2) and
+macOS; platform differences are decided at runtime in a single choke point
+(<code>campaign_blocked()</code>) and communicated to the user as a reason, not as a crash.</li>
+<li><b>A real interface.</b> A 60 fps Textual TUI plus an optional web dashboard, instead of a
+wall of terminal output and five scrollback panes.</li>
+</ul>
+
+<p>This paper makes the following contributions:</p>
+<ul>
+<li><b>C1 &mdash; Userspace 802.11 over USB.</b> A practical architecture for driving Wi-Fi
+adapters entirely from userspace: a dedicated USB worker thread with a priority TX queue and
+descriptor decoding on bulk-IN, with no kernel involvement (&sect;3.1).</li>
+<li><b>C2 &mdash; A complete userland AP.</b> An EvilTwin implementation that verifies the
+candidate passphrase against a captured 4-way handshake in real time via MIC computation,
+eliminating the offline cracking step (&sect;3.3).</li>
+<li><b>C3 &mdash; A three-layer ACK reliability model.</b> A decomposition of the overloaded word
+&ldquo;ACK&rdquo; into independently testable mechanisms with per-chip hooks (&sect;3.4).</li>
+<li><b>C4 &mdash; The platform-gate model.</b> Runtime capability detection as a model-layer
+predicate, so the interface can never offer an attack that cannot run on the current OS
+(&sect;3.5).</li>
+<li><b>C5 &mdash; A reproducible hardware rubric.</b> A five-axis verification methodology that
+separates <em>port fidelity</em> from <em>silicon capability</em> and grades each adapter card
+on measurements (&sect;3.7, &sect;4.2).</li>
+<li><b>C6 &mdash; Hardware-free continuous integration.</b> 3,008 tests over 293 files in which
+every USB interaction is mocked, making a hardware-dependent tool fully testable in a cloud
+runner (&sect;4.1).</li>
+</ul>
+
+<p>The remainder of this paper is organized as follows. Section 2 reviews the incumbent
+toolchains. Section 3 describes the airscope approach. Section 4 presents evaluation results.
+Section 5 discusses limitations and future directions; Section 6 concludes.</p>
+
+<h2>2. Related Work</h2>
+
+<h3>2.1. The Classic Linux Toolchain</h3>
+<p>The de facto audit stack is the aircrack-ng suite plus its satellites [1]. <em>airmon-ng</em>
+moves an interface into monitor mode via kernel ioctls; <em>airodump-ng</em> captures;
+<em>aireplay-ng</em> injects deauthentication; <em>hostapd</em> and <em>dnsmasq</em> together
+fake an access point [6]; <em>reaver</em> brute-forces WPS; <em>mdk3</em> floods. Each tool is
+competent in isolation; the system is not: state lives in shell variables, target selection is
+retyped per tool, and output formats disagree. The approach inherits its Linux-only and
+kernel-dependent character from these choices, not from the underlying protocols.</p>
+
+<h3>2.2. Unified Front-Ends</h3>
+<p><em>airgeddon</em> [2] wraps the classic stack in a menu-driven TUI, and <em>Wifite2</em> [3]
+automates target selection and chaining. Both improve ergonomics while leaving the dependency
+base untouched: monitor-mode kernel support, hostapd, and a Linux-only runtime remain
+prerequisites. We position airscope as a third path: it unifies the <em>implementation</em>,
+not merely the interface, eliminating the external process boundary entirely.</p>
+
+<h3>2.3. Detection and Sensing Frameworks</h3>
+<p><em>Kismet</em> [4] is a well-engineered wireless sniffer and intrusion detector, but a
+passive observer that does not drive attacks and sits on the kernel's monitor path. Hashcat
+[5] remains the standard for offline password recovery; airscope orchestrates it rather than
+reimplementing it. Prior academic work has documented the attack surface this tool exercises:
+KRACK [11], FragAttacks [12], and the Dragonblood SAE attacks [13]. airscope implements
+published techniques; the claim of this work is integration &mdash; one process, one state
+model, three operating systems &mdash; rather than cryptographic novelty.</p>
+
+<table>
+<tr><th>Property</th><th>airscope</th><th>aircrack-ng stack</th><th>airgeddon</th><th>Kismet</th></tr>
+<tr><td>Kernel changes</td><td><b>None</b></td><td>Monitor-mode drivers</td><td>Same as aircrack-ng</td><td>Monitor mode</td></tr>
+<tr><td>OS support</td><td><b>Linux + Windows + macOS</b></td><td>Linux only</td><td>Linux only</td><td>Mainly Linux</td></tr>
+<tr><td>External processes</td><td><b>Zero</b></td><td>hostapd, dnsmasq, reaver, ...</td><td>All of them</td><td>External plug-ins</td></tr>
+<tr><td>EvilTwin password check</td><td><b>Real-time MIC verify</b></td><td>Manual export to hashcat</td><td>Manual</td><td>N/A</td></tr>
+<tr><td>WPA3 SAE handling</td><td>Downgrade + MIC capture</td><td>Partial</td><td>No</td><td>Passive</td></tr>
+<tr><td>Interface</td><td><b>60 fps TUI + web</b></td><td>CLI</td><td>CLI + xterm</td><td>CLI + web</td></tr>
+<tr><td>Test coverage</td><td><b>3,008 tests, hardware mocked</b></td><td>C unit tests</td><td>None</td><td>Moderate</td></tr>
+<tr><td>Distribution</td><td><b>Single binary per OS</b></td><td>Package per distro</td><td>Script</td><td>Package per distro</td></tr>
+</table>
+<div class="caption"><b>Table 1.</b> Positioning against the incumbent toolchains.</div>
+
+<h2>3. The airscope Approach</h2>
+
+<h3>3.1. Userspace USB Transport</h3>
+<p>Each adapter is owned by a USB worker thread that performs all blocking PyUSB transfers off
+the asyncio event loop. The receive path is bulk-IN &rarr; descriptor decode &rarr; frame
+dispatch. The transmit path is a priority queue ordered so that time-critical management frames
+precede best-effort traffic:</p>
+<div class="eq">priority(TX) = mgmt &gt; dhcp &gt; http &gt; beacon &gt; deauth-burst</div>
+<p>The ordering is a deliberate policy: a captive portal serving an associated client while a
+deauth burst is in flight must not starve the handshake the burst exists to complete, and vice
+versa. Because the transport is bulk USB rather than a kernel radiotap path, frame timing is
+under application control and the same code path runs identically on all three operating
+systems, modulo libusb backend selection. The cost of this decision is that the project owns
+everything the kernel used to do &mdash; descriptor formats, firmware handshakes, retry policy
+&mdash; and that cost is paid per chipset in the 25 driver packages.</p>
+
+<h3>3.2. Pure-Python 802.11 Frame Model</h3>
+<p>airscope crafts and parses the frames it needs (beacon, probe, auth, assoc, deauth/disassoc,
+data, EAPOL) with a single parser and a single frame representation. A frame observed on the
+wire and a frame written to a capture file are the same object; there is no divergence between
+a &ldquo;live dialect&rdquo; and a &ldquo;file dialect&rdquo; to keep in sync. Above the driver
+boundary, nothing in the system knows what a dongle is &mdash; everything speaks 802.11.</p>
+
+<h3>3.3. Userland Access Point and Real-Time MIC Verification</h3>
+<p>The EvilTwin campaign deploys a complete userland stack: a DHCP server issues leases to
+associated clients; a DNS blackhole resolves every name to the portal host; a TCP/HTTP server
+delivers the credential-capture page. The contribution of this subsystem is not the portal
+itself but the verification loop. The same campaign has already captured the 4-way handshake,
+so each submitted passphrase is checked cryptographically as it arrives:</p>
+<div class="eq">PMK = PBKDF2<sub>SHA1</sub>(passphrase, SSID, 4096, 256) &nbsp;&rarr;&nbsp; PTK =
+KDF(PMK, ...) &nbsp;&rarr;&nbsp; accept iff MIC<sub>computed</sub> = MIC<sub>captured</sub></div>
+<p>The verdict is instant and grounded in the captured M2/M4 authenticator MIC: a match ends
+the campaign successfully; a mismatch re-serves the portal. No offline cracking step, no file
+handoff to an external tool, and no client-specific logic &mdash; which is why the same flow
+works against iOS, Android, Windows and macOS victims alike.</p>
+
+<h3>3.4. The Three-Layer ACK Reliability Model</h3>
+<p>Ambiguity around the word &ldquo;ACK&rdquo; is the largest single source of bugs in injection
+tooling [17], because two unrelated phenomena travel under one name. airscope separates:</p>
+<ul>
+<li><b>Heard ACKs (RX tally)</b> &mdash; did <em>we receive</em> the recipient's ACK frame?
+Implemented as <code>record_ack</code> hooks on incoming frames.</li>
+<li><b>Emitted ACKs</b> &mdash; will <em>our radio</em> acknowledge a frame addressed to a
+spoofed MAC (active monitor mode plus the chip's own TX hardware retry)?</li>
+<li><b>Software retry</b> &mdash; did <code>send_until_ack()</code> retransmit because the tally
+stayed silent?</li>
+</ul>
+<p>Campaigns drive them in a fixed protocol: <code>set_fake_mac()</code> (so the AP's unicast
+reaches us and the chip auto-ACKs, or the AP abandons the session) &rarr;
+<code>enable_rx_acks()</code> &rarr; <code>send_until_ack()</code> / <code>acks_seen()</code>.
+Deauthentication needs none of this and only reports endpoint ACKs. The decomposition makes each
+mechanism independently observable and testable, and it is why the hardware matrix of &sect;4.2
+can grade &ldquo;ACKs&rdquo; as its own column instead of folding it into a vague &ldquo;TX
+works&rdquo;.</p>
+
+<h3>3.5. Orchestration and Platform Gates</h3>
+<p>One event loop, one radio mutex per campaign: a single adapter cannot sensibly hop channels
+for reconnaissance while holding a fixed channel for a portal, so campaigns serialize and the
+model layer reports <em>why</em> an action is unavailable in plain English.
+<code>campaign_blocked()</code> is the single choke point where operating-system capability is
+decided. Placing the gate in the model rather than the view yields three properties: the TUI
+and web dashboard cannot diverge in what they offer; batch/auto-attack mode inherits identical
+decisions; and tests assert the platform matrix directly, so a wrong gate fails continuous
+integration rather than failing a user's engagement.</p>
+
+<h3>3.6. Chipset Driver Model</h3>
+<p>Each chipset is a package implementing the <code>Driver</code> abstract base class:
+transport (bulk and control), firmware load, MAC/PHY configuration, RX/TX hooks,
+<code>SUPPORTED_CHANNELS</code>, and the chip-specific pieces of the ACK model. Registration is
+data-driven: each package declares <code>SUPPORTED_IDS = [DeviceID(vid, pid), ...]</code>; the
+registry is built by reading those declarations only; and the first matching VID:PID lazily
+imports the driver, keeping startup O(registry) rather than O(all drivers). The driver boundary
+is deliberately narrow &mdash; it is the only layer allowed to know that a dongle is, say, an
+RTL8812AU &mdash; which is what makes port-fidelity measurement (&sect;4.2) meaningful: a driver
+either delivers the frames or it does not, and the measurement happens above it, where users
+feel it.</p>
+
+<h3>3.7. Evaluation Methodology</h3>
+<p>Two complementary evaluation instruments are used throughout &sect;4. First, a mocked-hardware
+test suite: all USB interactions are abstracted behind <code>pytest-mock</code>, so protocol
+logic, orchestration, UI and reports are exercised without radio hardware present. Second, a
+five-axis hardware rubric applied per adapter card: <b>RX</b> (reception breadth and quality),
+<b>TX</b> (frame injection), <b>ACKs</b> (auto-ACK and AP-ACK behaviour), <b>Port</b> (airscope
+versus the Linux kernel driver on the same card), and <b>Stress</b> (a 30-minute channel-hopping
+soak tracking RX degradation), rolled up into a letter grade by the published rubric
+[18]. Crucially, port fidelity and hardware ceiling are scored as separate axes: a faithful
+port of a weak card scores well on Port and poorly on Grade, while a lower-fidelity port of a
+capable card shows the inverse &mdash; a distinction that prevents both self-blame and
+self-congratulation from contaminating the results.</p>
+
+<h2>4. Results and Discussion</h2>
+
+<h3>4.1. Software Verification</h3>
+<p>A hardware tool that can only be tested with hardware ships bugs to every user's adapter.
+Table 2 summarizes the software verification regime; the full suite runs in approximately 77
+seconds locally and executes in CI on every push.</p>
+
+<table>
+<tr><th>Metric</th><th>Value</th></tr>
+<tr><td>Tests</td><td><b>3,008</b> passing; 11 xfailed (documented expected failures); 15 deselected (<code>slow</code> marker)</td></tr>
+<tr><td>Test files</td><td>293</td></tr>
+<tr><td>Source modules</td><td>658 files, 256,364 LOC (+39,977 LOC of tests; +39,118 LOC scripts)</td></tr>
+<tr><td>Hardware mocking</td><td>All USB interactions mocked; suite runs in a cloud runner</td></tr>
+<tr><td>Lint / style</td><td><code>ruff check</code> gate; comment policy enforced <em>by tests</em> (<code>test_style.py</code>)</td></tr>
+<tr><td>Release engineering</td><td>Tag must match <code>__version__</code> or the build fails; 4 binaries, smoke-tested before publish</td></tr>
+</table>
+<div class="caption"><b>Table 2.</b> Software verification and release-engineering regime.</div>
+
+<h3>4.2. Hardware Matrix Results</h3>
+<p>Across the 19 fully graded adapter cards in the verification matrix [18], the current grade
+distribution is 13 A, 3 B, 1 C and 2 D. The distribution is reported as-is because it encodes
+the project's central measurement discipline: grades combine port fidelity and hardware
+ceiling, and each card's page documents which of the two (or both) drives its result &mdash;
+including the honest case of a faithful port of weak silicon (Port &#10004;, low Grade) and
+the inverse (Port &#9888;, capable silicon).</p>
+
+<table>
+<tr><th>Axis</th><th>Measured</th><th>Dependent features</th></tr>
+<tr><td>RX</td><td>Reception breadth/quality, channel tune</td><td>All passive capture</td></tr>
+<tr><td>TX</td><td>Frame injection success</td><td>Deauth, WPS, WEP, PMKID extraction</td></tr>
+<tr><td>ACKs</td><td>Auto-ACK to spoofed MAC; AP ACK reception</td><td>WPS (heavy), PMKID (light)</td></tr>
+<tr><td>Port</td><td>airscope vs. kernel driver, same card</td><td>Attribution of gaps (fixable vs. not)</td></tr>
+<tr><td>Stress</td><td>30 min channel-hop soak</td><td>Capture stability over time</td></tr>
+</table>
+<div class="caption"><b>Table 3.</b> The five-axis hardware rubric and the features each axis gates.</div>
+
+<h3>4.3. Platform Support</h3>
+<table>
+<tr><th>Capability</th><th class="c">Linux</th><th class="c">Windows</th><th class="c">macOS</th></tr>
+<tr><td>Passive scan / hop / capture</td><td class="c">&#10004; native</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>Deauth injection</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>PMKID extraction</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>WPS PixieDust / PIN / PBC</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>WEP suite</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>WPA3 SAE downgrade capture</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10004; native</td></tr>
+<tr><td>EvilTwin portal</td><td class="c">&#10004;</td><td class="c">&#10004; WSL2</td><td class="c">&#10008; gated</td></tr>
+<tr><td>TUI + web + reports</td><td class="c">&#10004;</td><td class="c">&#10004;</td><td class="c">&#10004;</td></tr>
+</table>
+<div class="caption"><b>Table 4.</b> Capability matrix by operating system as of v0.3.8.</div>
+
+<p>Two results in Table 4 merit discussion. First, macOS runs the tool <em>natively</em> for
+every campaign except the EvilTwin portal: native operation was widely assumed to require
+Apple's closed IO80211 frameworks, but the userspace-USB design never touches the system's
+802.11 stack &mdash; it sits below it (at the USB endpoint) and beside it (with its own
+TCP/IP) &mdash; so the only blocked capability is the fake-AP interface mode macOS does not
+expose, gated with a user-visible reason. Second, Windows support is honest about its
+mechanism: the adapter is passed into WSL2 via <em>usbipd</em> [16] and airscope runs in the
+guest, so everything works &mdash; including EvilTwin &mdash; under the explicit condition of
+WSL2, which the documentation states rather than implying a native Win32 monitor path that
+does not exist.</p>
+
+<h3>4.4. Performance Characteristics</h3>
+<p>The UI sustains 60 fps on the same event loop as attack orchestration because USB blocking
+calls never run on that loop. Driver imports are lazy, making startup O(registry). The
+deduplication layer on the receive path (<code>wlan/dedupe.py</code>) exists specifically to
+sustain the stress-soak axis: RX degradation that only manifests after 30 minutes of continuous
+channel hopping is caught by measurement, not by user complaint.</p>
+
+<div class="fig">┌─────────────────────────────────────────────────────────────────────┐
+│ airscope (Python 3.11+, asyncio)                                   │
+│  ┌──────────────┐  ┌───────────────┐  ┌─────────────────────────┐  │
+│  │ Textual TUI  │  │ Web Dashboard │  │ Report / Vault          │  │
+│  │ 60fps, CSS   │  │ optional      │  │ pcap/hc22000/CSV/HTML   │  │
+│  └──────┬───────┘  └──────┬────────┘  └────────────┬────────────┘  │
+│  ┌──────┴─────────────────┴─────────────────────────┴────────────┐  │
+│  │ Attack Orchestrator (asyncio tasks, one radio mutex)          │  │
+│  │ Scanner · EvilTwin · WPS PIN/PBC · WEP · PMKID · SAE · Batch │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ WlanInterface + WlanFrameParser (pure-Python 802.11)          │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ USB Worker Thread (PyUSB, off the event loop)                │  │
+│  │ RX: bulk-IN → descriptor decode → dispatch   TX: priority Q   │  │
+│  │ ACK tracking: RX tally + chip HW retry + software retry       │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ Userland stack: frame craft · DHCP · DNS · TCP · HTTP portal │  │
+│  │ Crack: handshake parser · PMKID · MIC verify · WPA-PSK       │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│  ┌──────────────────────────┴────────────────────────────────────┐  │
+│  │ chips/ — 20 chipsets, 25 driver packages, VID:PID lazy import │  │
+│  └──────────────────────────┬────────────────────────────────────┘  │
+│              PyUSB / libusb → USB bulk endpoints                    │
+└─────────────────────────────────────────────────────────────────────┘</div>
+<div class="caption"><b>Figure 1.</b> Layered architecture. Received frames are decoded at the
+bulk endpoint and promoted through the same parser the attack logic consumes; there is exactly
+one representation of a frame in the system.</div>
+
+<h3>4.5. Comparison with Related Works</h3>
+<p>Table 1 summarizes the comparison. The distinguishing result is not that airscope's
+individual attacks are novel &mdash; they are published techniques [11&ndash;13] &mdash; but
+that the integration boundary has moved: the feature row with the largest practical impact is
+the elimination of external processes, because every subprocess in the classic stack is both
+a configuration surface and a failure surface. The real-time MIC verification row is the
+closest thing to a methodological novelty: it removes offline cracking from the critical path
+of the EvilTwin campaign entirely (&sect;3.3).</p>
+
+<h2>5. Limitations and Future Directions</h2>
+<p>A research claim that ignores its counter-evidence is marketing. The following are the
+tool's real boundaries as of v0.3.8.</p>
+<ol>
+<li><b>EvilTwin requires Linux</b> (native or WSL2). The userland AP itself is portable Python,
+but the platform gate blocks it on macOS, which does not expose the required interface
+configuration mode to this userspace approach. Every other campaign runs natively there.</li>
+<li><b>Windows support is WSL2 support.</b> It requires <em>usbipd</em> passthrough and WSL2;
+it is not a native Win32 monitor-mode implementation, and the project does not claim one.</li>
+<li><b>One radio, one campaign.</b> The radio mutex precludes simultaneous multi-attack on a
+single adapter.</li>
+<li><b>WPA3 is bounded by the protocol.</b> Downgrade capture and MIC recording are
+implemented, but SAE's PAKE construction does not yield to offline dictionary attack the way a
+captured WPA2-PSK handshake does [13]. The tool cannot crack what the protocol refuses to
+expose, and reporting otherwise would be dishonest.</li>
+<li><b>Hardware variance is real.</b> C- and D-grade cards in the matrix have measured RX/TX
+weaknesses; users on that silicon will have a worse experience, and no software fix changes
+the hardware ceiling.</li>
+<li><b>Frequency coverage.</b> 2.4 and 5 GHz today; 6 GHz / Wi-Fi 7 (802.11be, MLO) support
+is roadmap, not present.</li>
+<li><b>Cracking is orchestrated, not built-in.</b> Offline brute-force delegates to hashcat
+[5]; airscope parses, verifies and tracks, but GPU hashing is external by design.</li>
+<li><b>Throughput ceiling.</b> A userspace bulk-USB path is ample for the management and
+control frames involved in auditing, but this is not a wideband SDR: it is not a spectrum
+analyzer and does not capture entire 160 MHz channels.</li>
+<li><b>Regulatory exposure.</b> Injection, deauthentication and impersonation are restricted or
+illegal without authorization in most jurisdictions. airscope ships in-product legal notices
+and authorization framing, but a tool cannot technically distinguish an authorized auditor
+from an attacker &mdash; the operator's authorization is the real control.</li>
+<li><b>Attack scale is bounded by passphrase entropy.</b> airscope improves the workflow, not
+the mathematics of PBKDF2.</li>
+</ol>
+<p>Future work, in priority order: (1) a capture-quality feedback loop that scores every
+handshake (EAPOL message coverage, descriptor version, MIC validity), auto-recaptures until
+crackable, and streams hashcat status into the TUI; (2) a defensive security-score mode
+grading PMF, WPA3, WPS exposure, weak PSKs and rogue-AP indicators for self-audit; (3)
+multi-adapter operation with one radio locked to a channel while another hops; (4) 6 GHz /
+Wi-Fi 7 support; (5) WIDS alerting (deauth-flood and evil-twin detection) with webhook
+notifications; and (6) an entry-point plugin surface for community campaigns.</p>
+
+<h2>6. Conclusions</h2>
+<p>airscope demonstrates that the Linux-only, kernel-dependent, multi-process Wi-Fi audit
+workflow is contingent rather than necessary. With a userspace USB transport, a pure-Python
+802.11 and network stack, and a disciplined platform-gate model, the same tool runs on three
+operating systems with zero kernel modifications, zero external daemons, and 3,008 tests
+proving its behaviour without hardware present. The five-axis hardware rubric shows the
+remaining variance to be attributable &mdash; card by card &mdash; to either port fidelity or
+silicon ceiling, never to guesswork. The limitations of &sect;5 are equally part of the
+result: the EvilTwin portal needs Linux, Windows needs WPA2-era honesty about WSL2, and WPA3
+remains bounded by its own cryptography. We release the work as single-file binaries for four
+platform targets, with a hardware matrix and per-card notes published alongside the code, and
+we ask only that it be used on networks you own or are explicitly authorized to audit.</p>
+
+<h2>Funding</h2>
+<p class="note">This research received no external funding.</p>
+
+<h2>Conflicts of Interest</h2>
+<p class="note">The author declares no conflict of interest. The author builds and maintains
+airscope; the tool is distributed under the GNU General Public License v2.0.</p>
+
+<h2>References</h2>
+<ol class="refs">
+<li>aircrack-ng: Wi-Fi security auditing tools. Available online:
+https://www.aircrack-ng.org (accessed 26 September 2026).</li>
+<li>airgeddon: Multi-attack wireless auditing tool. Available online:
+https://github.com/v1s1t0r1sh3r3/airgeddon (accessed 26 September 2026).</li>
+<li>derv82: Wifite2: Automated wireless attack tool. Available online:
+https://github.com/derv82/wifite2 (accessed 26 September 2026).</li>
+<li>Kismet: Wireless network detector, sniffer, and intrusion detection system. Available
+online: https://www.kismetwireless.net (accessed 26 September 2026).</li>
+<li>hashcat: Advanced password recovery. Available online: https://hashcat.net (accessed
+26 September 2026).</li>
+<li>hostapd: IEEE 802.11 AP and IEEE 802.1X/WPA/WPA2/EAP/RADIUS authenticator. Available
+online: https://w1.fi/hostapd/ (accessed 26 September 2026).</li>
+<li>PyUSB: Python USB access library. Available online: https://pyusb.github.io (accessed
+26 September 2026).</li>
+<li>Textual: Rapid application development framework for Python. Available online:
+https://textual.textualize.io (accessed 26 September 2026).</li>
+<li>IEEE Standard for Information Technology &mdash; Part 11: Wireless LAN Medium Access
+Control (MAC) and Physical Layer (PHY) Specifications; IEEE Std 802.11-2020; IEEE:
+Piscataway, NJ, USA, 2020.</li>
+<li>Wi-Fi Alliance: WPA3 Specification. Available online:
+https://www.wi-fi.org/discover-wi-fi/security (accessed 26 September 2026).</li>
+<li>Vanhoef, M.; Piessens, F. Key Reinstallation Attacks: Forcing Nonce Reuse in WPA2. In
+Proceedings of the Network and Distributed System Security Symposium (NDSS), San Diego, CA,
+USA, 26 February&ndash;1 March 2017.</li>
+<li>Vanhoef, M. Fragment and Forge: Breaking Wi-Fi Using Frame Aggregation and Fragmentation.
+In Proceedings of the 30th USENIX Security Symposium (USENIX Security 21), Virtual, 11&ndash;13
+August 2021.</li>
+<li>Draho&scaron;, D.; Vanhoef, M.; Rezn&iacute;k, P. Dragonblood: Breaking the WPA3 Standard.
+In Proceedings of the IEEE Symposium on Security and Privacy (S&P), San Francisco, CA, USA,
+20&ndash;22 May 2019.</li>
+<li>Python Software Foundation. asyncio &mdash; Asynchronous I/O. Available online:
+https://docs.python.org/3/library/asyncio.html (accessed 26 September 2026).</li>
+<li>PyInstaller: Freeze Python programs into executables. Available online:
+https://pyinstaller.org (accessed 26 September 2026).</li>
+<li>usbipd-win: USB/IP client for Windows. Available online:
+https://github.com/dorssel/usbipd-win (accessed 26 September 2026).</li>
+<li>airscope Project. ACKs: Diagnosing Hardware Auto-ACK and Retry. Repository Documentation,
+docs/ACKS.md. Available online:
+https://github.com/udhaybhat00/airscope/blob/main/docs/ACKS.md (accessed 26 September 2026).</li>
+<li>airscope Project. Hardware Testing &amp; Verification; and Grading. Repository Documentation,
+docs/SUPPORTED-HARDWARE.md, docs/GRADING.md. Available online:
+https://github.com/udhaybhat00/airscope/blob/main/docs/SUPPORTED-HARDWARE.md (accessed
+26 September 2026).</li>
+<li>WiGLE: Wireless Network Mapping. Available online: https://wigle.net (accessed
+26 September 2026).</li>
+</ol>
+
+<p class="note" style="margin-top:14px; border-top:1px solid #999; padding-top:8px">
+<b>Disclaimer:</b> airscope is intended exclusively for use on networks and equipment you own
+or are explicitly authorized to audit. Unauthorized access to computer networks is illegal in
+most jurisdictions (e.g., CFAA in the US, IT Act 2000 in India, Computer Misuse Act in the UK).
+The author accepts no liability for misuse.</p>
+
+</body>
+</html>
