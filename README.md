@@ -18,6 +18,10 @@
   <img src="https://img.shields.io/badge/pure-Python-orange" alt="Pure Python">
 </p>
 
+<p align="center">
+  <a href="docs/RESEARCH.md"><strong>Technical report</strong></a> — full architecture, evaluation methodology, platform matrix, and honest limitations, written up like a research paper.
+</p>
+
 ---
 
 ## Table of Contents
@@ -618,6 +622,7 @@ airscope/
 - [docs/SUPPORTED-HARDWARE.md](docs/SUPPORTED-HARDWARE.md) — hardware compatibility & grading
 - [docs/FIRMWARE.md](docs/FIRMWARE.md) — firmware loading
 - [docs/ACKS.md](docs/ACKS.md) — ACK/retry architecture
+- [docs/RESEARCH.md](docs/RESEARCH.md) — technical report: architecture, evaluation, limitations
 - [docs/THEMES.md](docs/THEMES.md) — theme customization
 - [CONTRIBUTING.md](CONTRIBUTING.md) — dev setup, PR guidelines
 - [Landing page](https://udhaybhat00.github.io/airscope/) — feature overview and downloads (GitHub Pages)
