@@ -345,6 +345,8 @@ class ScannerView(Screen):
             self._log_pbc_status()  # Auto-invade is ON by default
 
     async def on_screen_resume(self) -> None:
+        # Restore keyboard focus after returning from Vault.
+        self.query_one("#ap-table", DataTable).focus()
         if self._frozen:
             self._frozen = False
             self._update_freeze_banner(False)
