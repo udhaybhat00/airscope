@@ -1,5 +1,9 @@
+import atexit
+import asyncio
 import logging
 import os
+import signal
+import subprocess
 import sys
 from textual import events, work
 from textual.app import App
@@ -131,8 +135,10 @@ class AirscopeApp(App):
         self.target_ap: Optional[AccessPoint] = None
         self.vault = Vault()
         self.pbc_enabled: bool = True
+        self._quitting: bool = False  # guard against double-execution of action_quit()
         register_app_themes(self)
         self.theme = Config.theme
+        _register_cleanup()
 
     def on_text_selected(self, event: events.TextSelected) -> None:
         selected = self.screen.get_selected_text()
@@ -238,12 +244,171 @@ class AirscopeApp(App):
     def action_preferences(self) -> None:
         self.push_screen(PreferencesModal())
 
-    async def action_quit(self):
-        self.persist_config()
-        if self.array:
-            await self.array.close()
-        self.exit()
+    def on_key(self, event: events.Key) -> None:
+        """Direct key handler — bypasses Textual binding dispatch.
 
+        The binding system (Screen BINDINGS) was not reliably dispatching
+        'q' → action_quit on the Pi (Textual 8.2.8). This handler catches
+        the key at the App level as a fallback.
+
+        Note: Screens like splash.py and scanner.py also have their own
+        Binding("q", "quit") which dispatches to action_quit() via Textual's
+        binding system. That means BOTH paths can fire for one keypress, scheduling
+        action_quit twice. The _quitting guard in action_quit() prevents the second
+        invocation from running redundant cleanup or calling self.exit() again.
+        """
+        if event.key == "q":
+            event.stop()
+            event.prevent_default()
+            print("[airscope] on_key: caught 'q', calling action_quit", flush=True)
+            self.run_worker(self.action_quit, exclusive=True, group="quit")
+
+    async def action_quit(self):
+        """Quit: persist config, close adapters, release cards, exit.
+
+        Guard against double-invocation: when a Screen has its own Binding("q",
+        "quit") AND this App-level on_key handler both fire for the same keypress,
+        Textual schedules two concurrent action_quit() tasks. The _quitting flag
+        ensures only the first one runs full cleanup; subsequent calls return immediately.
+
+        Every cleanup step is wrapped in timeouts so that a hung adapter close
+        or a slow modprobe cycle can never prevent self.exit() from being
+        called.  self.exit() is in a finally block — it ALWAYS runs.
+        """
+        if self._quitting:
+            logger.info("action_quit: already quitting, ignoring duplicate call")
+            return
+        self._quitting = True
+        print("\n[airscope] action_quit: shutting down...", flush=True)
+        try:
+            self.notify("Shutting down…", severity="information", timeout=8)
+        except Exception:
+            pass  # notify failure must not block exit
+        try:
+            self.persist_config()
+        except Exception as exc:
+            logger.warning("action_quit: persist_config failed: %s", exc)
+        try:
+            # 1) Close the WlanArray (stops driver loops, releases USB).
+            if self.array:
+                try:
+                    await asyncio.wait_for(self.array.close(), timeout=15)
+                except asyncio.TimeoutError:
+                    logger.warning("action_quit: array.close() timed out after 15s")
+                except Exception as exc:
+                    logger.warning("action_quit: array.close() failed: %s", exc)
+            # 2) Release modprobe blacklists / udev rules.
+            from airscope.setup.linux import release_all
+            await asyncio.wait_for(asyncio.to_thread(release_all), timeout=30)
+        except asyncio.TimeoutError:
+            logger.warning("action_quit: cleanup timed out; forcing exit")
+        except Exception as exc:
+            logger.warning("action_quit: cleanup failed: %s", exc)
+        finally:
+            # 3) Restore interfaces (best-effort, in thread to avoid blocking).
+            try:
+                await asyncio.wait_for(asyncio.to_thread(_restore_wireless_interfaces), timeout=10)
+            except Exception:
+                pass
+            # 4) ALWAYS exit.
+            print("[airscope] action_quit: exiting", flush=True)
+            self.exit()
+
+
+# ---------------------------------------------------------------------------
+# Wireless card cleanup safety net
+# ---------------------------------------------------------------------------
+#
+# Textual's _on_exit_app is an INTERNAL method that does NOT call user-defined
+# on_exit_app overrides. So a plain ``async def on_exit_app`` in AirscopeApp was
+# dead code — it never fired when airscope exited via Ctrl+C, SIGTERM, or any
+# path other than the 'q' keybinding.
+#
+# Instead we register a synchronous atexit handler + signal handlers that call
+# _restore_wireless_interfaces(). This runs even on abnormal exit paths and is
+# idempotent (release_all checks for conf files; interface restore skips
+# non-monitor interfaces).
+
+_CLEANUP_REGISTERED = False
+
+
+def _restore_wireless_interfaces() -> None:
+    """Best-effort: release blacklisted cards AND restore any monitor-mode
+    interfaces back to managed mode so they are immediately usable after airscope exits.
+
+    Called from action_quit (via the 'q' keybinding) and also registered as an
+    atexit + signal handler. Idempotent: release_all() is a no-op when no
+    airscope conf files exist, and interface restoration skips any iface that
+    isn't in monitor mode.
+    """
+    # 1) Remove modprobe blacklists / udev rules installed by airscope setup.
+    try:
+        from airscope.setup.linux import release_all
+        release_all()
+    except Exception as exc:  # never let cleanup prevent exit
+        logger.warning("_restore_wireless_interfaces: release_all failed: %s", exc)
+
+    # 2) Restore any monitor-mode interface back to managed mode.
+    try:
+        result = subprocess.run(
+            ["iw", "dev"], capture_output=True, text=True,
+            timeout=5, check=False)
+        for line in result.stdout.splitlines():
+            stripped = line.strip()
+            if stripped.startswith("Interface ") and len(stripped.split()) >= 2:
+                iface_name = stripped.split()[1]
+                info = subprocess.run(
+                    ["iw", "dev", iface_name, "info"],
+                    capture_output=True, text=True,
+                    timeout=3, check=False)
+                if "type monitor" in info.stdout:
+                    logger.info("Restoring %s from monitor to managed mode.",
+                                  iface_name)
+                    subprocess.run(
+                        f"ip link set {iface_name} down && iw dev {iface_name} \
+set type managed && ip link set {iface_name} up",
+                        shell=True, timeout=5, check=False)
+    except Exception as exc:
+        logger.warning("_restore_wireless_interfaces: interface restore failed: %s",
+                      exc)
+
+
+def _register_cleanup() -> None:
+    """Register the wireless-card cleanup handler with atexit and signal handlers.
+
+    SIGINT is intentionally NOT installed here. In Textual 8.x (app.py line 463),
+    Ctrl+C is bound to ``action_help_quit`` which shows a notification telling the
+    user to press 'q'. Calling ``sys.exit(0)`` from our own SIGINT handler fires
+    *during* Textual's event-loop processing and raises SystemExit mid-message-pump,
+    corrupting the queue so that pressing 'q' afterward does nothing — exactly the
+    "can't exit airscope" symptom reported in production.
+
+    Instead: let Textual handle Ctrl+C via its own key binding → user presses 'q'
+    → ``action_quit()`` runs (``_restore_wireless_interfaces()`` + ``self.exit()``).
+    The atexit handler below covers abnormal exits as a safety net. SIGTERM/SIGHUP
+    (non-interactive kills) still get cleanup but without sys.exit, so the event loop
+    stays in control.
+    """
+    global _CLEANUP_REGISTERED
+    if _CLEANUP_REGISTERED:
+        return
+    _CLEANUP_REGISTERED = True
+    atexit.register(_restore_wireless_interfaces)
+
+    def _handle_termination(signum, frame):
+        """Run cleanup for non-interactive signals (SIGTERM/SIGHUP).
+
+        Does NOT call sys.exit — Textual's event loop must remain in control so that
+        graceful shutdown via action_quit can complete normally.
+        """
+        _restore_wireless_interfaces()
+
+    # SIGINT excluded: see docstring above. Only SIGTERM + SIGHUP here.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        try:
+            signal.signal(sig, _handle_termination)
+        except (ValueError, OSError):
+            pass  # not in main thread or signal unsupported
 
 _FILE_LOGGING_CONFIGURED = False  # Avoid duplicate loggers
 

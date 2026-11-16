@@ -142,7 +142,7 @@ class FocusViewV2(Screen):
         Binding("c", "campaign('chop')", "ChopChop", show=True),
         Binding("w", "wps_pbc_mode", "WPS PBC", show=True),
         Binding("s", "silence", "Silence", show=True),
-        Binding("q", "app.quit", "Quit", show=True),
+        Binding("q", "quit", "Quit", show=True),
     ]
 
     _DEAUTH_SEL_ROUNDS = 10
@@ -1020,8 +1020,6 @@ class FocusViewV2(Screen):
             return
         from airscope.persist.save import find_existing_handshake
         existing = find_existing_handshake(ap.bssid)
-        if existing is None:
-            existing = find_existing_handshake(ap.bssid, ext=".hc22000")
         if existing is not None:
             self._pending_evil_input = evil_input
             self.app.push_screen(

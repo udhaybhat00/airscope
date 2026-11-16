@@ -1,6 +1,7 @@
 """Persistent user preferences: a flat TOML file in the OS config dir."""
 from __future__ import annotations
 
+import os
 import tomllib
 from pathlib import Path
 
@@ -35,7 +36,31 @@ class Config:
             return
         except (OSError, tomllib.TOMLDecodeError) as e:
             raise ConfigError(f"Failed to load config at {_PATH}: {e}") from e
-        cls.captures_dir = data.get("captures_dir", cls.captures_dir)
+        captures_dir_raw = data.get("captures_dir", cls.captures_dir)
+        # Resolve relative paths to absolute so airscope always finds its
+        # capture directory regardless of the working directory it was
+        # launched from.  This matters because pip reinstalls, cron jobs,
+        # and systemd services all start with different cwds.
+        #
+        # Resolution order:
+        #   1. If already absolute → use as-is.
+        #   2. Try CWD-relative (backward compat for existing setups).
+        #   3. Fall back to ~/Projects/wifi-collector/captures which is
+        #      the convention shared with wifi_collector_v14.py, so both
+        #      tools see the same captures without manual config edits.
+        if os.path.isabs(captures_dir_raw):
+            cls.captures_dir = captures_dir_raw
+        else:
+            cwd_relative = Path.cwd() / captures_dir_raw
+            project_default = Path.home() / "Projects" / "wifi-collector" / captures_dir_raw
+            if cwd_relative.is_dir():
+                cls.captures_dir = str(cwd_relative)
+            elif project_default.parent.is_dir() or project_default.exists():
+                cls.captures_dir = str(project_default)
+            else:
+                # Keep the raw relative path as a last resort; load_capture_index
+                # will simply return {} and airscope shows "no captures".
+                cls.captures_dir = captures_dir_raw
         cls.save_pcap = data.get("save_pcap", cls.save_pcap)
         cls.theme = data.get("theme", cls.theme)
         cls.log_level = data.get("log_level", cls.log_level)

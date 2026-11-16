@@ -42,6 +42,8 @@ from airscope.setup.base import Prompter, Setup, SetupResult
 logger = logging.getLogger(__name__)
 
 RULE_DIR = "/etc/udev/rules.d"
+# Use /etc/modprobe.d for per-chipset blacklist configs.
+# These persist across reboots to keep kernel drivers from binding.
 BLACKLIST_DIR = "/etc/modprobe.d"
 
 # Sysfs USB tree: a module constant so tests can repoint it at a fixture.
@@ -324,6 +326,88 @@ def _stage(name: str, text: str | None) -> str | None:
 # uninstall that clears the whole family. Only ever our own ``airscope-*`` files are read or deleted.
 
 _CONF_PREFIX = "airscope-"
+
+
+def release_all() -> list[SetupResult]:
+    """Silently reverse every airscope rule/blacklist pair currently installed.
+
+    Called from :meth:`AirscopeApp.action_quit` so a wireless card handed to airscope returns
+    to its normal kernel driver on the next replug instead of staying "installed" after the
+    program exits (the modprobe blocklist + udev rule would otherwise keep the card from ever
+    binding its regular netdev again).
+
+    Wide removal: *every* installed ``airscope-*`` pair is deleted, so chipsets that share a
+    kernel module -- e.g. two rtl88xxau cards -- all get freed rather than leaving one still
+    blocked by the other's leftover conf.
+
+    Best-effort per chipset: a failure removing one never blocks exit or masks another. Only ever
+    touches our own ``airscope-*`` files, so unrelated modprobe/udev config is untouched.
+    """
+    results = []
+    if not sys.platform.startswith("linux"):
+        return results
+
+    conf_dir = Path(BLACKLIST_DIR)
+    if not conf_dir.exists():
+        return results
+
+    # Collect every module name from all installed airscope confs *before*
+    # we delete them, so we can reload the kernel drivers after removal.
+    # Without this step the USB adapters stay invisible until a physical
+    # replug or reboot — release_all removed the blacklist but never told
+    # the kernel to load the driver back into memory.
+    modules_to_reload: list[str] = []
+    seen_modules: set[str] = set()
+
+    for conf in sorted(conf_dir.glob(f"{_CONF_PREFIX}*.conf")):
+        key = _safe(conf.stem[len(_CONF_PREFIX):])
+        target = SetupTarget(key=key, description="", ids=(), module_hints=())
+        # Read modules before remove_rule deletes the file.
+        try:
+            for m in modules_in_conf(conf):
+                if m not in seen_modules and m not in _NEVER_BLACKLIST:
+                    seen_modules.add(m)
+                    modules_to_reload.append(m)
+        except Exception as exc:
+            logger.warning("release_all: could not read modules from %s: %s", conf, exc)
+        try:
+            results.append(remove_rule(target))
+        except Exception as exc:  # never let one chipset abort shutdown
+            logger.warning("release_all: failed to remove rules for %s: %s", key, exc)
+
+    # Reload kernel modules so the freed adapters become visible immediately,
+    # without requiring a physical replug or reboot.  Best-effort: failures are
+    # logged but never prevent exit (the blacklist files are already gone).
+    #
+    # We do an rmmod + modprobe cycle rather than just `modprobe` because a prior
+    # airscope session may have removed the driver while USB devices were still
+    # connected; in that state simply loading the module does NOT trigger device
+    # rebinding.  Removing then reloading forces the kernel to scan for and bind
+    # the now-unblacklisted adapters.
+    #
+    # Some conf files list alias names (e.g. rtl88XXau) alongside the real
+    # DKMS module name (88XXau).  We try both; rmmod on a non-existent module is
+    # harmlessly ignored, and we only warn when *neither* form can be loaded.
+    if modules_to_reload:
+        for m in modules_to_reload:
+            # Derive the bare name (strip "rtl" prefix) as an alias fallback.
+            bare = m[3:] if m.startswith("rtl") and len(m) > 6 else None
+            candidates = [m] + ([bare] if bare and bare != m else [])
+            loaded_any = False
+            for cand in candidates:
+                subprocess.call(["rmmod", cand], timeout=10)  # ignore errors
+                rc = subprocess.call(["modprobe", cand], timeout=15)
+                if rc == 0:
+                    logger.info("release_all: reloaded kernel module %s", cand)
+                    loaded_any = True
+                    break  # this chipset is handled; stop trying aliases
+            if not loaded_any:
+                logger.warning(
+                    "release_all: could not load any of %s for adapter; replug it.",
+                    candidates,
+                )
+
+    return results
 _CONF_SUFFIX = ".conf"
 _HANDS_RE = re.compile(r"# airscope hands (.+) \(([^)]+)\) to userland")
 

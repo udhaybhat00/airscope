@@ -233,7 +233,7 @@ class ScannerView(Screen):
     """
 
     BINDINGS = [
-        Binding("q", "app.quit", "Quit", show=True),
+        Binding("q", "quit", "Quit", show=True),
         Binding("f", "toggle_freeze", "Freeze", show=True),
         Binding("s", "cycle_sort", "Sort", show=True),
         Binding("v", "open_vault", "Vault", show=True),
@@ -244,9 +244,9 @@ class ScannerView(Screen):
         Binding("o", "toggle_sort_dir", "Sort Asc/Desc", show=False),
         Binding("home", "scroll_home", "Top", show=False, priority=True),
         Binding("end", "scroll_end", "Bottom", show=False, priority=True),
-        Binding("space", "toggle_mark", "Mark", show=False),
-        Binding("b", "batch_marked", "Batch", show=False),
-        Binding("B", "batch_stop", "Stop batch", show=False),
+        Binding("space", "toggle_mark", "Mark", show=True),
+        Binding("b", "batch_marked", "Batch", show=True),
+        Binding("B", "batch_stop", "Stop batch", show=True),
     ]
 
     # (column_key, display_label). BEACONS removed.
@@ -295,8 +295,19 @@ class ScannerView(Screen):
             yield FilterBar(supported)
             yield Label("", id="freeze-banner")
             table = _APScanTable(cursor_type="row", id="ap-table")
+            widths = {
+                "signal": 12,
+                "ssid": 56,
+                "channel": 6,
+                "encryption": 36,
+                "wps": 20,
+                "clients": 9,
+                "identity": 32,
+            }
             for key, label in self._COLUMNS:
-                table.add_column(label + "  ", key=key)
+                table.add_column(
+                    label + "  ", key=key, width=widths[key]
+                )
             yield table
             yield Label("", id="preview-strip")
             yield Label("[dim]waiting for interface[/dim]", id="scan-status")
@@ -334,6 +345,8 @@ class ScannerView(Screen):
             self._log_pbc_status()  # Auto-invade is ON by default
 
     async def on_screen_resume(self) -> None:
+        # Restore keyboard focus after returning from Vault.
+        self.query_one("#ap-table", DataTable).focus()
         if self._frozen:
             self._frozen = False
             self._update_freeze_banner(False)
