@@ -160,6 +160,26 @@ class VaultView(Screen):
         except Exception as exc:
             self.notify(f"Could not snapshot APs: {exc}", severity="error")
             return
+        # Include saved Vault networks, not only live scanner results.
+        known = {ap.bssid.lower(): ap for ap in aps if ap.bssid}
+
+        for capture in self.app.vault.all_captures():
+            bssid = (capture.bssid or "").strip()
+            if not bssid:
+                continue
+
+            key = bssid.lower()
+
+            if key not in known:
+                ap = exports.ApSnap(
+                    bssid=bssid,
+                    ssid=capture.ssid,
+                )
+                known[key] = ap
+                aps.append(ap)
+            elif not known[key].ssid and capture.ssid:
+                known[key].ssid = capture.ssid
+
         cracks = exports.cracks_from_vault(self.app.vault)
         keys = {c.bssid: c.psk for c in cracks}
         session = exports.latest_session_jsonl(Path.cwd())
