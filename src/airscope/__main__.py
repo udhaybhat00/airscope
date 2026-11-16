@@ -393,6 +393,15 @@ def main() -> None:
         asyncio.run(asyncio.wait_for(_smoke(), timeout=60))
         return
 
+    # Require root for live wireless operations on Linux.
+    if _sys.platform.startswith("linux") and os.geteuid() != 0:
+        print(
+            "\nERROR: Airscope must launch with sudo.\n"
+            "Run: sudo /usr/local/bin/airscope\n",
+            file=_sys.stderr,
+        )
+        _sys.exit(1)
+
     if args.auto:
         import asyncio
 

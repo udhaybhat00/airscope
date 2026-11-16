@@ -295,8 +295,19 @@ class ScannerView(Screen):
             yield FilterBar(supported)
             yield Label("", id="freeze-banner")
             table = _APScanTable(cursor_type="row", id="ap-table")
+            widths = {
+                "signal": 12,
+                "ssid": 56,
+                "channel": 6,
+                "encryption": 36,
+                "wps": 20,
+                "clients": 9,
+                "identity": 32,
+            }
             for key, label in self._COLUMNS:
-                table.add_column(label + "  ", key=key)
+                table.add_column(
+                    label + "  ", key=key, width=widths[key]
+                )
             yield table
             yield Label("", id="preview-strip")
             yield Label("[dim]waiting for interface[/dim]", id="scan-status")
